@@ -1,9 +1,9 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-// The dev orchestrator (scripts/dev.mjs) passes the resolved API server port as
-// SERVER_PORT so the proxy targets whatever free port the server bound.
-const serverTarget = `http://localhost:${process.env.SERVER_PORT ?? "3000"}`;
+// Dev proxy targets the API server. Both read PORT, so `PORT=3010 npm run dev`
+// keeps them in sync. Vite auto-picks a free web port if 5173 is taken.
+const serverTarget = `http://localhost:${process.env.PORT ?? "3000"}`;
 
 export default defineConfig({
   plugins: [react()],
@@ -12,7 +12,7 @@ export default defineConfig({
     emptyOutDir: true
   },
   server: {
-    port: Number(process.env.WEB_PORT) || 5173,
+    port: 5173,
     proxy: {
       "/trpc": serverTarget,
       "/api": serverTarget,

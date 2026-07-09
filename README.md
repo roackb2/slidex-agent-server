@@ -30,7 +30,7 @@ VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
 ```
 
-`npm run dev` auto-allocates free ports (starting from `PORT`/`WEB_PORT`, default 3000/5173) so it won't collide with other local servers, and prints the actual URLs — the Vite dev proxy is pointed at the chosen server port automatically. Set `PORT`/`WEB_PORT` to pin them.
+The API server binds `PORT` (default 3000) and the Vite dev proxy reads the same `PORT`, so if 3000 is taken run `PORT=3010 npm run dev` and both move together. Vite auto-picks a free web port if 5173 is busy and prints the URL. If the API port is taken the server exits with a clear message telling you to set `PORT`.
 
 ## Agent Modes
 
