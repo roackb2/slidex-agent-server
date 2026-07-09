@@ -30,7 +30,7 @@ VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
 ```
 
-Open the Vite dev app at `http://localhost:5173`. The backend runs on `http://localhost:3000`.
+`npm run dev` auto-allocates free ports (starting from `PORT`/`WEB_PORT`, default 3000/5173) so it won't collide with other local servers, and prints the actual URLs — the Vite dev proxy is pointed at the chosen server port automatically. Set `PORT`/`WEB_PORT` to pin them.
 
 ## Agent Modes
 

@@ -19,9 +19,21 @@ const app = createApp({
 });
 
 const server = app.listen(env.PORT, () => {
-  console.log(`SlideX agent server listening on :${env.PORT}`);
+  const address = server.address();
+  const boundPort = typeof address === "object" && address ? address.port : env.PORT;
+  console.log(`SlideX agent server listening on :${boundPort}`);
   console.log(`Session data directory: ${env.dataDir}`);
   console.log(`Agent driver: ${env.AGENT_DRIVER}`);
+});
+
+server.on("error", (error: NodeJS.ErrnoException) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(
+      `Port ${env.PORT} is already in use. Set PORT to a free port, or run \`npm run dev\` which allocates free ports automatically.`
+    );
+    process.exit(1);
+  }
+  throw error;
 });
 
 process.on("SIGTERM", shutdown);

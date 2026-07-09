@@ -1,6 +1,10 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
+// The dev orchestrator (scripts/dev.mjs) passes the resolved API server port as
+// SERVER_PORT so the proxy targets whatever free port the server bound.
+const serverTarget = `http://localhost:${process.env.SERVER_PORT ?? "3000"}`;
+
 export default defineConfig({
   plugins: [react()],
   build: {
@@ -8,11 +12,11 @@ export default defineConfig({
     emptyOutDir: true
   },
   server: {
-    port: 5173,
+    port: Number(process.env.WEB_PORT) || 5173,
     proxy: {
-      "/trpc": "http://localhost:3000",
-      "/api": "http://localhost:3000",
-      "/healthz": "http://localhost:3000"
+      "/trpc": serverTarget,
+      "/api": serverTarget,
+      "/healthz": serverTarget
     }
   }
 });
