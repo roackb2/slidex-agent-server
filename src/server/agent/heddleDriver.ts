@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createConversationEngine } from "@roackb2/heddle";
 import type { Env } from "../env.js";
 import { prepareSlideXExtension } from "./slidexExtension.js";
 import { runSlideXAgent, type ConversationEngineLike } from "./slidexHeddleAgent.js";
@@ -18,14 +19,6 @@ import type { AgentDriver } from "./types.js";
 export function createHeddleDriver(env: Env): AgentDriver {
   return {
     async run(args) {
-      const { createConversationEngine } = await import("@roackb2/heddle").catch((error) => {
-        throw new Error(
-          `@roackb2/heddle is not installed or is not accessible. Install it, or use AGENT_DRIVER=mock for local UI work. ${String(
-            error
-          )}`
-        );
-      });
-
       await args.emit({
         type: "status",
         message: "Preparing SlideX tools"
