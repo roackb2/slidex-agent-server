@@ -36,24 +36,17 @@ Open the Vite dev app at `http://localhost:5173`. The backend runs on `http://lo
 
 `AGENT_DRIVER=mock` is the default for local development. It exercises Supabase, tRPC, local sessions, SSE, and MotionDoc updates without calling an LLM.
 
-The Heddle SDK is installed as `@roackb2/heddle`. Set `AGENT_DRIVER=heddle` when Jay's module and the MotionDoc MCP command are ready:
+The Heddle SDK is installed as `@roackb2/heddle` (>= 4.1.0). Set `AGENT_DRIVER=heddle` and point at the SlideX MotionDoc MCP command:
 
 ```bash
 AGENT_DRIVER=heddle
 HEDDLE_WORKSPACE_ROOT=/app
-JAY_AGENT_MODULE_PATH=./dist/server/agent/jayAgent.example.js
 MOTIONDOC_MCP_COMMAND=node
 MOTIONDOC_MCP_ARGS='["/app/path/to/motiondoc-mcp.js"]'
+MOTIONDOC_MCP_CWD=/app
 ```
 
-The real Jay module should export either:
-
-```ts
-export async function runSlideXAgent(args) {
-  // args.engine is createConversationEngine({ apiKey, preferApiKey: true, model })
-  // args.mcp is the MotionDoc MCP stdio child process descriptor
-}
-```
+The SlideX conversational agent is built in this repo (`src/server/agent/slidexHeddleAgent.ts`), driven by `src/server/agent/heddleDriver.ts`. The driver prepares the SlideX MCP once as a **self-contained Heddle host extension** (Heddle >= 4.1.0), then builds a fresh, user-scoped conversation engine per request and delegates the turn to the agent module. Heddle owns the MCP subprocess lifecycle via the extension (spawned per tool call), so `MOTIONDOC_MCP_*` is just the command Heddle runs — the built-in `StdioMcpProcessManager` is not used on the Heddle path.
 
 The server never stores the user's LLM API key. It is accepted only in the stream request body and passed into `createConversationEngine({ apiKey, preferApiKey: true, model })` for that request.
 
@@ -74,9 +67,9 @@ VITE_SUPABASE_URL=...
 VITE_SUPABASE_ANON_KEY=...
 DEFAULT_MODEL=gpt-4.1
 HEDDLE_WORKSPACE_ROOT=/app
-JAY_AGENT_MODULE_PATH=./dist/server/agent/jayAgent.example.js
 MOTIONDOC_MCP_COMMAND=...
 MOTIONDOC_MCP_ARGS=...
+MOTIONDOC_MCP_CWD=...
 ```
 
 Attach a Railway volume and mount it at `/data`, or set `DATA_DIR` to the mounted path. If Railway injects `RAILWAY_VOLUME_MOUNT_PATH`, the server will use that when `DATA_DIR` is not set.

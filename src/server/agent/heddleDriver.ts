@@ -1,21 +1,20 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import type { Env } from "../env.js";
-import type { AgentDriver, AgentRunArgs, AgentRunResult } from "./types.js";
+import { prepareSlideXExtension } from "./slidexExtension.js";
+import { runSlideXAgent, type ConversationEngineLike } from "./slidexHeddleAgent.js";
+import type { AgentDriver } from "./types.js";
 
-type JayAgentRunner = (args: {
-  engine: unknown;
-  mcp: ReturnType<AgentRunArgs["mcpManager"]["getOrStart"]>;
-  userId: string;
-  sessionId: string;
-  motionDoc: string;
-  message: string;
-  history: AgentRunArgs["history"];
-  signal: AbortSignal;
-  emit: AgentRunArgs["emit"];
-}) => Promise<AgentRunResult>;
-
+/**
+ * Heddle-backed agent driver.
+ *
+ * Boundary: this driver owns Heddle wiring. It prepares the self-contained
+ * SlideX MCP host extension ONCE (shared across all requests), then builds a
+ * fresh, user-scoped conversation engine per request — the user's API key, a
+ * per-user/session state root, and the shared extension — and delegates the turn
+ * to the SlideX agent module. Heddle owns the MCP subprocess lifecycle via the
+ * extension, so the server's StdioMcpProcessManager is not used on this path.
+ */
 export function createHeddleDriver(env: Env): AgentDriver {
   return {
     async run(args) {
@@ -26,6 +25,12 @@ export function createHeddleDriver(env: Env): AgentDriver {
           )}`
         );
       });
+
+      await args.emit({
+        type: "status",
+        message: "Preparing SlideX tools"
+      });
+      const extension = await prepareSlideXExtension(env);
 
       await args.emit({
         type: "status",
@@ -40,38 +45,18 @@ export function createHeddleDriver(env: Env): AgentDriver {
       );
       await fs.mkdir(stateRoot, { recursive: true });
 
-      const engine = await createConversationEngine({
+      const engine = createConversationEngine({
         workspaceRoot: env.HEDDLE_WORKSPACE_ROOT || process.cwd(),
         stateRoot,
         apiKey: args.llmApiKey,
         preferApiKey: true,
-        model: args.model
-      });
+        model: args.model,
+        memoryMaintenanceMode: "none",
+        hostExtensions: [extension.extension]
+      }) as unknown as ConversationEngineLike;
 
-      const runner = await loadJayAgentRunner(env);
-      const mcp = args.mcpManager.getOrStart();
-
-      if (!mcp) {
-        await args.emit({
-          type: "status",
-          message: "MotionDoc MCP subprocess is not configured"
-        });
-      } else {
-        await args.emit({
-          type: "tool",
-          name: "motiondoc-mcp",
-          status: "started",
-          detail: {
-            command: mcp.command,
-            args: mcp.args
-          }
-        });
-      }
-
-      return runner({
+      return runSlideXAgent({
         engine,
-        mcp,
-        userId: args.user.id,
         sessionId: args.sessionId,
         motionDoc: args.motionDoc,
         message: args.message,
@@ -81,29 +66,6 @@ export function createHeddleDriver(env: Env): AgentDriver {
       });
     }
   };
-}
-
-async function loadJayAgentRunner(env: Env): Promise<JayAgentRunner> {
-  if (!env.JAY_AGENT_MODULE_PATH) {
-    throw new Error(
-      "JAY_AGENT_MODULE_PATH is not configured. Point it at Jay's compiled agent module, or set AGENT_DRIVER=mock."
-    );
-  }
-
-  const modulePath = path.isAbsolute(env.JAY_AGENT_MODULE_PATH)
-    ? env.JAY_AGENT_MODULE_PATH
-    : path.resolve(process.cwd(), env.JAY_AGENT_MODULE_PATH);
-  const mod = (await import(pathToFileURL(modulePath).href)) as {
-    runSlideXAgent?: JayAgentRunner;
-    default?: JayAgentRunner;
-  };
-
-  const runner = mod.runSlideXAgent ?? mod.default;
-  if (typeof runner !== "function") {
-    throw new Error("Jay agent module must export runSlideXAgent(args) or default(args).");
-  }
-
-  return runner;
 }
 
 function safePathSegment(value: string): string {

@@ -12,7 +12,6 @@ const EnvSchema = z.object({
   AGENT_DRIVER: z.enum(["mock", "heddle"]).optional(),
   DEFAULT_MODEL: z.string().min(1).default("gpt-4.1"),
   HEDDLE_WORKSPACE_ROOT: z.string().optional(),
-  JAY_AGENT_MODULE_PATH: z.string().optional(),
   MOTIONDOC_MCP_COMMAND: z.string().optional(),
   MOTIONDOC_MCP_ARGS: z.string().optional(),
   MOTIONDOC_MCP_CWD: z.string().optional()
