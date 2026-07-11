@@ -10,6 +10,10 @@ const EnvSchema = z.object({
   SUPABASE_ANON_KEY: z.string().min(1).optional(),
   CORS_ORIGIN: z.string().optional(),
   AGENT_DRIVER: z.enum(["mock", "heddle"]).optional(),
+  SLIDEX_AGENT_ENABLED: z
+    .enum(["false", "true"])
+    .default("false")
+    .transform((value) => value === "true"),
   DEFAULT_MODEL: z.string().min(1).default("gpt-4.1"),
   HEDDLE_WORKSPACE_ROOT: z.string().optional(),
   // Dev-only: skip Supabase auth and treat every request as a fixed local user.

@@ -37,6 +37,8 @@ The API server binds `PORT` (default 3000) and the Vite dev proxy reads the same
 
 `AGENT_DRIVER=mock` is the default for local development. It exercises tRPC, local sessions, SSE, and MotionDoc updates without calling an LLM.
 
+The reconnectable run API is also default-off so deploying this branch preserves the upstream server behavior. Set `SLIDEX_AGENT_ENABLED=true` to register `/api/agent/runs`, `/api/agent/runs/:runId/events`, and `/api/agent/runs/:runId/cancel`. The SlideX editor must be built with `NEXT_PUBLIC_SLIDEX_AGENT_ENABLED=true` at the same time. Leave both flags unset or `false` to keep the conversational agent hidden; the existing `/api/agent/stream` route is unaffected.
+
 ### Testing without Supabase (dev auth bypass)
 
 If you don't have Supabase set up, enable `DEV_AUTH_BYPASS=1` (dev only — it is ignored when `NODE_ENV=production`). Every request then authenticates as `DEV_USER_ID` (default `dev-user`), so you can drive the tRPC procedures, the web UI, and `/api/agent/stream` with no token. Example — the full agent stream over HTTP:
@@ -132,7 +134,7 @@ Body:
 
 Events are emitted as normal SSE frames with `event:` and JSON `data:` fields: `session`, `status`, `tool`, `token`, `motionDoc`, `complete`, and `error`.
 
-The reconnectable run API used by the SlideX editor is:
+When `SLIDEX_AGENT_ENABLED=true`, the reconnectable run API used by the SlideX editor is:
 
 - `POST /api/agent/runs` to accept a run and return its `runId`.
 - `GET /api/agent/runs/:runId/events`, using either `?after=<sequence>` or
