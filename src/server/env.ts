@@ -1,5 +1,6 @@
 import path from "node:path";
 import { z } from "zod";
+import { corsConfigurationIssue } from "./http/corsPolicy.js";
 
 const EnvSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -32,6 +33,18 @@ const EnvSchema = z.object({
   MOTIONDOC_MCP_COMMAND: z.string().optional(),
   MOTIONDOC_MCP_ARGS: z.string().optional(),
   MOTIONDOC_MCP_CWD: z.string().optional()
+}).superRefine((env, context) => {
+  const issue = corsConfigurationIssue(env.CORS_ORIGIN, {
+    requireExplicitAllowlist:
+      env.NODE_ENV === "production" && env.SLIDEX_AGENT_ENABLED
+  });
+  if (issue) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["CORS_ORIGIN"],
+      message: issue
+    });
+  }
 });
 
 export type Env = z.infer<typeof EnvSchema> & {
@@ -39,8 +52,8 @@ export type Env = z.infer<typeof EnvSchema> & {
   dataDir: string;
 };
 
-export function loadEnv(): Env {
-  const parsed = EnvSchema.parse(process.env);
+export function loadEnv(input: NodeJS.ProcessEnv = process.env): Env {
+  const parsed = EnvSchema.parse(input);
   const dataDir =
     parsed.DATA_DIR ??
     parsed.RAILWAY_VOLUME_MOUNT_PATH ??
