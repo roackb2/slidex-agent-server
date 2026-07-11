@@ -1,14 +1,54 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import express from "express";
-import type { AuthService } from "../auth.js";
+import { createApp } from "../app.js";
+import { AuthService } from "../auth.js";
+import { loadEnv, type Env } from "../env.js";
+import { StdioMcpProcessManager } from "../mcp/stdioMcp.js";
+import { SessionStore } from "../storage/sessionStore.js";
 import type { SlideXAgentRunService } from "../agent/slidexAgentRunService.js";
 import type { AgentRunEvent } from "../../shared/schema.js";
 import {
   createSubscribeAgentRunHandler,
   type AgentRunRouteDeps
 } from "./agentRuns.js";
+
+test("defaults the reconnectable run API flag to disabled", () => {
+  const previous = process.env.SLIDEX_AGENT_ENABLED;
+  delete process.env.SLIDEX_AGENT_ENABLED;
+
+  try {
+    assert.equal(loadEnv().SLIDEX_AGENT_ENABLED, false);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.SLIDEX_AGENT_ENABLED;
+    } else {
+      process.env.SLIDEX_AGENT_ENABLED = previous;
+    }
+  }
+});
+
+test("keeps the reconnectable run API hidden while preserving the legacy stream when disabled", async () => {
+  await withAgentFeature(false, async (baseUrl) => {
+    const runResponse = await postJson(`${baseUrl}/api/agent/runs`);
+    const legacyResponse = await postJson(`${baseUrl}/api/agent/stream`);
+
+    assert.equal(runResponse.status, 404);
+    assert.equal(legacyResponse.status, 401);
+  });
+});
+
+test("registers the reconnectable run API when explicitly enabled", async () => {
+  await withAgentFeature(true, async (baseUrl) => {
+    const response = await postJson(`${baseUrl}/api/agent/runs`);
+
+    assert.equal(response.status, 401);
+  });
+});
 
 test("streams canonical SSE frames and resumes from Last-Event-ID", async () => {
   let afterSequence: number | undefined;
@@ -88,4 +128,48 @@ function parseSseFrames(text: string) {
       const payload = JSON.parse(data) as AgentRunEvent;
       return { event, id, kind: payload.kind, sequence: payload.sequence };
     });
+}
+
+async function withAgentFeature(
+  enabled: boolean,
+  run: (baseUrl: string) => Promise<void>
+): Promise<void> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "slidex-agent-flag-"));
+  const env: Env = {
+    NODE_ENV: "test",
+    PORT: 3000,
+    AGENT_DRIVER: "mock",
+    SLIDEX_AGENT_ENABLED: enabled,
+    DEFAULT_MODEL: "gpt-test",
+    dataDir: root
+  };
+  const mcpManager = new StdioMcpProcessManager(env);
+  const app = createApp({
+    env,
+    authService: new AuthService(env),
+    sessionStore: new SessionStore(root),
+    mcpManager
+  });
+  const server = app.listen(0);
+  await once(server, "listening");
+
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    await run(`http://127.0.0.1:${address.port}`);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+    await mcpManager.stop();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+}
+
+function postJson(url: string): Promise<Response> {
+  return fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: "{}"
+  });
 }
