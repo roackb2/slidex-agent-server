@@ -31,4 +31,6 @@ Accepted user messages and success, cancellation, or failure terminals are
 persisted as one explainable product history. Reset marks an in-flight address
 before deleting its session so a late result cannot recreate deleted state.
 The route layer maps the service's stable product errors to HTTP status codes
-and sanitizes unknown failures; provider/runtime details stay in server logs.
+and sanitizes unknown failures. Structured lifecycle logs contain only stable
+correlation and outcome facts; prompts, MotionDoc source, credentials, user
+identity, and raw provider/runtime errors must never be logged.

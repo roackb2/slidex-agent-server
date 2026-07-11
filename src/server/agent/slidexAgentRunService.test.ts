@@ -17,7 +17,8 @@ import { SessionStore } from "../storage/sessionStore.js";
 import { AgentRunProtocol } from "../../shared/schema.js";
 import {
   SlideXAgentRunService,
-  SlideXAgentRunServiceError
+  SlideXAgentRunServiceError,
+  type AgentRunLogger
 } from "./slidexAgentRunService.js";
 
 test("streams a reconnectable run and persists the completed SlideX session", async () => {
@@ -57,6 +58,57 @@ test("streams a reconnectable run and persists the completed SlideX session", as
       afterSequence: complete.sequence - 1
     }));
     assert.deepEqual(replay.map(({ kind }) => kind), ["result"]);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("emits correlation-safe accepted and terminal lifecycle facts", async () => {
+  const records: Array<{
+    level: "info" | "warn";
+    fields: Record<string, unknown>;
+    message: string;
+  }> = [];
+  const logger: AgentRunLogger = {
+    info: (fields, message) => records.push({ level: "info", fields, message }),
+    warn: (fields, message) => records.push({ level: "warn", fields, message })
+  };
+  const fixture = await createFixture(createEngine(), logger);
+
+  try {
+    const accepted = await fixture.service.start(fixture.user, {
+      message: "Sensitive user request",
+      motionDoc: "# Sensitive source",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key",
+      model: "gpt-test"
+    }, { correlationId: "request-1" });
+    await collect(fixture.service.subscribe({
+      userId: fixture.user.id,
+      runId: accepted.runId
+    }));
+
+    const acceptedLog = records.find(({ fields }) => fields.event === "agent_run.accepted");
+    const terminalLog = records.find(({ fields }) => fields.event === "agent_run.terminal");
+    assert.ok(acceptedLog);
+    assert.deepEqual(acceptedLog.fields, {
+      event: "agent_run.accepted",
+      runId: accepted.runId,
+      sessionId: accepted.session.id,
+      model: "gpt-test",
+      correlationId: "request-1"
+    });
+    assert.ok(terminalLog);
+    assert.ok(records.indexOf(acceptedLog) < records.indexOf(terminalLog));
+    assert.equal(terminalLog.fields.runId, accepted.runId);
+    assert.equal(terminalLog.fields.sessionId, accepted.session.id);
+    assert.equal(terminalLog.fields.outcome, "complete");
+    assert.equal(terminalLog.fields.correlationId, "request-1");
+    assert.equal(typeof terminalLog.fields.durationMs, "number");
+    assert.doesNotMatch(
+      JSON.stringify(records),
+      /Sensitive user request|Sensitive source|test-api-key|test-user/
+    );
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
@@ -287,7 +339,10 @@ test("projects Heddle activities to the JSON-safe public client shape", () => {
   assert.deepEqual(event.activity, { type: "loop.finished" });
 });
 
-async function createFixture(engine = createEngine()) {
+async function createFixture(
+  engine = createEngine(),
+  logger?: AgentRunLogger
+) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "slidex-agent-run-"));
   const sessionStore = new SessionStore(root);
   const user: AuthUser = { id: "test-user" };
@@ -300,7 +355,8 @@ async function createFixture(engine = createEngine()) {
       dataDir: root
     } as Env,
     sessionStore,
-    createEngine: async () => engine
+    createEngine: async () => engine,
+    logger
   });
   return { root, service, sessionStore, user };
 }

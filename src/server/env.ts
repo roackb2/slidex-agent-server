@@ -9,6 +9,7 @@ const EnvSchema = z.object({
   SUPABASE_URL: z.string().url().optional(),
   SUPABASE_ANON_KEY: z.string().min(1).optional(),
   CORS_ORIGIN: z.string().optional(),
+  LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).optional(),
   AGENT_DRIVER: z.enum(["mock", "heddle"]).optional(),
   SLIDEX_AGENT_ENABLED: z
     .enum(["false", "true"])

@@ -26,7 +26,11 @@ export function createStartAgentRunHandler(deps: AgentRunRouteDeps) {
   return async (req: Request, res: Response) => {
     try {
       const user = await deps.authService.requireUserFromRequest(req);
-      const result = await deps.agentRunService.start(user, StartAgentRunInputSchema.parse(req.body));
+      const result = await deps.agentRunService.start(
+        user,
+        StartAgentRunInputSchema.parse(req.body),
+        { correlationId: typeof req.id === "string" ? req.id : undefined }
+      );
       res.status(202).json(StartAgentRunResultSchema.parse(result));
     } catch (error) {
       sendRequestError(res, error);
@@ -65,10 +69,12 @@ export function createSubscribeAgentRunHandler(deps: AgentRunRouteDeps) {
         sendRequestError(res, error);
         return;
       }
-      console.error(`[agent-runs] Event stream failed for ${req.params.runId ?? "unknown run"}`, error);
-      if (typeof error === "object" && error !== null && "issues" in error) {
-        console.error("[agent-runs] Validation issues", error.issues);
-      }
+      req.log?.error({
+        event: "agent_stream.failed",
+        runId: req.params.runId ?? "unknown",
+        errorType: errorType(error),
+        validationIssueCount: validationIssueCount(error)
+      }, "Agent event stream failed");
       endResponse(res);
     } finally {
       req.off("aborted", abortSubscription);
@@ -175,7 +181,12 @@ function parseReplayCursor(value: unknown): number | undefined {
 function sendRequestError(res: Response, error: unknown): void {
   const response = toAgentApiError(error);
   if (response.code === "internal_error") {
-    console.error("[agent-runs] Request failed", error);
+    res.req.log?.error({
+      event: "agent_request.failed",
+      code: response.code,
+      status: response.status,
+      errorType: errorType(error)
+    }, "Agent request failed");
   }
   res.status(response.status).json(AgentApiErrorResponseSchema.parse({
     error: {
@@ -183,6 +194,17 @@ function sendRequestError(res: Response, error: unknown): void {
       message: response.message
     }
   }));
+}
+
+function errorType(error: unknown): string {
+  return error instanceof Error ? error.name : typeof error;
+}
+
+function validationIssueCount(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null || !("issues" in error)) {
+    return undefined;
+  }
+  return Array.isArray(error.issues) ? error.issues.length : undefined;
 }
 
 const ERROR_STATUS = {
