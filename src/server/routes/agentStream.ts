@@ -121,7 +121,7 @@ function titleFromMessage(message: string): string {
   return message.replace(/\s+/g, " ").trim().slice(0, 80) || "Untitled deck";
 }
 
-function toPublicErrorMessage(error: unknown): string {
+export function toPublicErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return raw
     .replace(/sk-[A-Za-z0-9_-]{12,}/g, "sk-***")

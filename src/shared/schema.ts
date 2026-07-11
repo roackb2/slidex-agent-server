@@ -53,6 +53,53 @@ export const AgentStreamInputSchema = z.object({
   model: z.string().trim().min(1).max(120).optional()
 });
 
+export const StartAgentRunInputSchema = AgentStreamInputSchema.extend({
+  sourceRevision: z.string().trim().min(1).max(128)
+});
+
+export const StartAgentRunResultSchema = z.object({
+  accepted: z.literal(true),
+  runId: z.string(),
+  acceptedAt: z.string(),
+  session: SessionSchema
+});
+
+const ConversationActivitySchema = z
+  .object({
+    type: z.string()
+  })
+  .passthrough();
+
+export const AgentRunEventSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("activity"),
+    runId: z.string(),
+    sequence: z.number().int().positive(),
+    activity: ConversationActivitySchema
+  }),
+  z.object({
+    type: z.literal("complete"),
+    runId: z.string(),
+    sequence: z.number().int().positive(),
+    session: SessionSchema,
+    motionDoc: z.string(),
+    assistantMessage: z.string(),
+    baseSourceRevision: z.string()
+  }),
+  z.object({
+    type: z.literal("cancelled"),
+    runId: z.string(),
+    sequence: z.number().int().positive(),
+    reason: z.string()
+  }),
+  z.object({
+    type: z.literal("error"),
+    runId: z.string(),
+    sequence: z.number().int().positive(),
+    message: z.string()
+  })
+]);
+
 export const AgentStreamEventSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("session"),
@@ -93,3 +140,6 @@ export type Session = z.infer<typeof SessionSchema>;
 export type SessionSummary = z.infer<typeof SessionSummarySchema>;
 export type AgentStreamInput = z.infer<typeof AgentStreamInputSchema>;
 export type AgentStreamEvent = z.infer<typeof AgentStreamEventSchema>;
+export type StartAgentRunInput = z.infer<typeof StartAgentRunInputSchema>;
+export type StartAgentRunResult = z.infer<typeof StartAgentRunResultSchema>;
+export type AgentRunEvent = z.infer<typeof AgentRunEventSchema>;

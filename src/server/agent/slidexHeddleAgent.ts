@@ -1,3 +1,4 @@
+import { HeddleEventType } from "@roackb2/heddle";
 import type {
   ConversationActivity,
   ConversationEngineHost,
@@ -20,7 +21,7 @@ import type { AgentEmit, AgentRunResult } from "./types.js";
 // does not couple to Heddle's full engine type.
 export type ConversationEngineLike = {
   sessions: {
-    listExisting(): Array<{ id: string; model?: string }>;
+    readExisting(id: string): { id: string; model?: string } | undefined;
     create(input: {
       id?: string;
       name?: string;
@@ -104,11 +105,17 @@ function createProgressHost(emit: AgentEmit): ConversationEngineHost {
   const streamedByStep = new Map<number, string>();
 
   return {
+    ...createSlideXApprovalHost(),
     events: {
       onActivity(activity: ConversationActivity) {
         void emitForActivity(activity, emit, streamedByStep);
       }
-    },
+    }
+  };
+}
+
+export function createSlideXApprovalHost(): ConversationEngineHost {
+  return {
     approvals: {
       // SlideX tools are pre-approved (safe, local, stateless); deny anything else.
       async requestToolApproval(request: ToolApprovalPolicyContext) {
@@ -127,7 +134,7 @@ async function emitForActivity(
   streamedByStep: Map<number, string>
 ): Promise<void> {
   switch (activity.type) {
-    case "assistant.stream": {
+    case HeddleEventType.assistantStream: {
       const prev = streamedByStep.get(activity.step) ?? "";
       const delta = activity.text.startsWith(prev)
         ? activity.text.slice(prev.length)
@@ -138,10 +145,10 @@ async function emitForActivity(
       }
       return;
     }
-    case "tool.calling":
+    case HeddleEventType.toolCalling:
       await emit({ type: "tool", name: activity.tool, status: "started" });
       return;
-    case "tool.completed":
+    case HeddleEventType.toolCompleted:
       await emit({
         type: "tool",
         name: activity.tool,
@@ -149,10 +156,10 @@ async function emitForActivity(
         detail: { durationMs: activity.durationMs }
       });
       return;
-    case "loop.started":
+    case HeddleEventType.loopStarted:
       await emit({ type: "status", message: "Agent is working…" });
       return;
-    case "loop.finished":
+    case HeddleEventType.loopFinished:
       await emit({
         type: "status",
         message: "Agent finished",
@@ -164,7 +171,7 @@ async function emitForActivity(
   }
 }
 
-function buildPrompt(args: RunSlideXAgentArgs): string {
+export function buildPrompt(args: Pick<RunSlideXAgentArgs, "motionDoc" | "message">): string {
   const trimmedDoc = args.motionDoc.trim();
   const motionDocContext = trimmedDoc
     ? `Current MotionDoc source (edit from this exact base and pass it into SlideX tools):
@@ -180,13 +187,13 @@ User request: ${args.message}
 Use the SlideX MotionDoc tools to fulfill the request, validate the result, and reply with a short summary of what changed.`;
 }
 
-function resolveConversationSession(
+export function resolveConversationSession(
   engine: ConversationEngineLike,
   slideXSessionId: string,
   model: string
 ): { id: string } {
   const sessionId = `slidex-${slideXSessionId}`;
-  const existing = engine.sessions.listExisting().find((session) => session.id === sessionId);
+  const existing = engine.sessions.readExisting(sessionId);
   if (!existing) {
     return engine.sessions.create({
       id: sessionId,
@@ -200,7 +207,7 @@ function resolveConversationSession(
     : engine.sessions.updateSettings(existing.id, { model });
 }
 
-function resolveMotionDoc(
+export function resolveMotionDoc(
   engine: ConversationEngineLike,
   sessionId: string,
   previousArtifactId: string | undefined,

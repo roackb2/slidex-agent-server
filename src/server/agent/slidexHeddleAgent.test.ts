@@ -174,7 +174,7 @@ function createEngineHarness(options: {
     submissions,
     engine: {
       sessions: {
-        listExisting: () => [...sessions.values()],
+        readExisting: (id) => sessions.get(id),
         create: (input) => {
           const id = input.id ?? HEDDLE_SESSION_ID;
           const session = { id, model: input.model };

@@ -1,10 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createConversationEngine } from "@roackb2/heddle";
+import type { ConversationEngine } from "@roackb2/heddle";
 import type { Env } from "../env.js";
 import { prepareSlideXExtension } from "./slidexExtension.js";
-import { runSlideXAgent, type ConversationEngineLike } from "./slidexHeddleAgent.js";
-import type { AgentDriver } from "./types.js";
+import { runSlideXAgent } from "./slidexHeddleAgent.js";
+import type { AgentDriver, AgentRunArgs } from "./types.js";
 
 /**
  * Heddle-backed agent driver.
@@ -24,45 +25,11 @@ export function createHeddleDriver(env: Env): AgentDriver {
         type: "status",
         message: "Preparing SlideX tools"
       });
-      const extension = await prepareSlideXExtension(env);
-
       await args.emit({
         type: "status",
         message: "Creating user-scoped Heddle conversation engine"
       });
-
-      const stateRoot = path.join(
-        env.dataDir,
-        "heddle",
-        safePathSegment(args.user.id),
-        safePathSegment(args.sessionId)
-      );
-      await fs.mkdir(stateRoot, { recursive: true });
-
-      // Dev-only: resolve credentials from a Heddle OAuth store (e.g. a Codex
-      // subscription) instead of the per-request API key. Production always
-      // uses the user's own key.
-      const devAuthStore =
-        env.NODE_ENV !== "production" && env.DEV_HEDDLE_AUTH_STORE
-          ? path.resolve(env.DEV_HEDDLE_AUTH_STORE)
-          : undefined;
-
-      const engine = createConversationEngine({
-        workspaceRoot: env.HEDDLE_WORKSPACE_ROOT || process.cwd(),
-        stateRoot,
-        ...(devAuthStore
-          ? { credentialStorePath: devAuthStore }
-          : { apiKey: args.llmApiKey, preferApiKey: true }),
-        model: args.model,
-        memoryMaintenanceMode: "none",
-        hostExtensions: [extension.extension]
-      }) as unknown as ConversationEngineLike;
-
-      if (devAuthStore) {
-        console.warn(
-          `[agent] DEV_HEDDLE_AUTH_STORE is ON — using Heddle OAuth credentials from ${devAuthStore} instead of the request llmApiKey.`
-        );
-      }
+      const engine = await createSlideXConversationEngine(env, args);
 
       return runSlideXAgent({
         engine,
@@ -75,6 +42,51 @@ export function createHeddleDriver(env: Env): AgentDriver {
       });
     }
   };
+}
+
+export async function createSlideXConversationEngine(
+  env: Env,
+  args: Pick<AgentRunArgs, "user" | "sessionId" | "llmApiKey" | "model">
+): Promise<ConversationEngine> {
+  const extension = await prepareSlideXExtension(env);
+  const stateRoot = path.join(
+    env.dataDir,
+    "heddle",
+    safePathSegment(args.user.id),
+    safePathSegment(args.sessionId)
+  );
+  await fs.mkdir(stateRoot, { recursive: true });
+
+  // Dev-only: resolve credentials from a Heddle OAuth store (e.g. a Codex
+  // subscription) instead of the per-request API key. Production always uses
+  // the user's own key.
+  const devAuthStore =
+    env.NODE_ENV !== "production" && env.DEV_HEDDLE_AUTH_STORE
+      ? path.resolve(env.DEV_HEDDLE_AUTH_STORE)
+      : undefined;
+
+  const engine = createConversationEngine({
+    workspaceRoot: env.HEDDLE_WORKSPACE_ROOT || process.cwd(),
+    stateRoot,
+    ...(devAuthStore
+      ? { credentialStorePath: devAuthStore }
+      : { apiKey: args.llmApiKey, preferApiKey: true }),
+    model: args.model,
+    memoryMaintenanceMode: "none",
+    toolProfile: {
+      preset: "default",
+      memoryMode: "none"
+    },
+    hostExtensions: [extension.extension]
+  });
+
+  if (devAuthStore) {
+    console.warn(
+      `[agent] DEV_HEDDLE_AUTH_STORE is ON — using Heddle OAuth credentials from ${devAuthStore} instead of the request llmApiKey.`
+    );
+  }
+
+  return engine;
 }
 
 function safePathSegment(value: string): string {
