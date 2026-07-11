@@ -14,6 +14,7 @@ import type {
 import type { AuthUser } from "../auth.js";
 import type { Env } from "../env.js";
 import { SessionStore } from "../storage/sessionStore.js";
+import { AgentRunProtocol } from "../../shared/schema.js";
 import { SlideXAgentRunService } from "./slidexAgentRunService.js";
 
 test("streams a reconnectable run and persists the completed SlideX session", async () => {
@@ -31,19 +32,28 @@ test("streams a reconnectable run and persists the completed SlideX session", as
       userId: fixture.user.id,
       runId: accepted.runId
     }));
-    const complete = events.find((event) => event.type === "complete");
+    events.forEach((event) => AgentRunProtocol.parseEvent(event));
+    const complete = events.find((event) => event.kind === "result");
 
-    assert.ok(complete && complete.type === "complete");
-    assert.equal(complete.motionDoc, "# Updated deck");
-    assert.equal(complete.baseSourceRevision, "revision-1");
-    assert.deepEqual(complete.session.messages.map(({ role }) => role), ["user", "assistant"]);
+    assert.ok(complete && complete.kind === "result");
+    assert.match(complete.timestamp, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(complete.result.motionDoc, "# Updated deck");
+    assert.equal(complete.result.baseSourceRevision, "revision-1");
+    assert.deepEqual(
+      complete.result.session.messages.map(({ role }) => role),
+      ["user", "assistant"]
+    );
+    assert.deepEqual(
+      AgentRunProtocol.parseEvent(JSON.parse(AgentRunProtocol.stringifyEvent(complete))),
+      complete
+    );
 
     const replay = await collect(fixture.service.subscribe({
       userId: fixture.user.id,
       runId: accepted.runId,
       afterSequence: complete.sequence - 1
     }));
-    assert.deepEqual(replay.map(({ type }) => type), ["complete"]);
+    assert.deepEqual(replay.map(({ kind }) => kind), ["result"]);
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
@@ -66,6 +76,24 @@ test("keeps runs private to the authenticated user", async () => {
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
+});
+
+test("projects Heddle activities to the JSON-safe public client shape", () => {
+  const event = AgentRunProtocol.parseEvent({
+    kind: "activity",
+    runId: "run-1",
+    sequence: 1,
+    timestamp: "2026-07-11T00:00:00.000Z",
+    activity: {
+      type: "loop.finished",
+      state: {
+        trace: [{ diagnostics: undefined }]
+      }
+    }
+  });
+
+  assert.ok(event.kind === "activity");
+  assert.deepEqual(event.activity, { type: "loop.finished" });
 });
 
 async function createFixture() {

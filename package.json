@@ -12,12 +12,12 @@
     "dev:web": "vite --host 0.0.0.0",
     "build": "tsc -p tsconfig.server.json && vite build",
     "start": "node dist/server/index.js",
-    "test": "tsx --test src/server/agent/*.test.ts",
+    "test": "tsx --test src/server/agent/*.test.ts src/server/routes/*.test.ts",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "try:agent": "tsx scripts/trySlidexAgent.ts"
   },
   "dependencies": {
-    "@roackb2/heddle": "4.2.0",
+    "@roackb2/heddle": "git+https://github.com/roackb2/heddle.git#1a8cb3b1fe563daf58416fc41fc9158182b11c58",
     "@supabase/supabase-js": "^2.45.0",
     "@trpc/client": "^10.45.2",
     "@trpc/server": "^10.45.2",
@@ -29,7 +29,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "superjson": "^2.2.1",
-    "zod": "^3.23.8"
+    "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

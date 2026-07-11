@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  ConversationRunProtocolCodec,
+  type ConversationRunProtocolEvent
+} from "@roackb2/heddle/remote";
 
 export const ChatRoleSchema = z.enum(["user", "assistant", "system", "tool"]);
 
@@ -64,41 +68,29 @@ export const StartAgentRunResultSchema = z.object({
   session: SessionSchema
 });
 
-const ConversationActivitySchema = z
+export const PublicConversationActivitySchema = z
   .object({
-    type: z.string()
-  })
-  .passthrough();
+    type: z.string(),
+    text: z.string().optional(),
+    tool: z.string().optional(),
+    result: z.object({
+      ok: z.boolean().optional()
+    }).optional()
+  });
 
-export const AgentRunEventSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("activity"),
-    runId: z.string(),
-    sequence: z.number().int().positive(),
-    activity: ConversationActivitySchema
-  }),
-  z.object({
-    type: z.literal("complete"),
-    runId: z.string(),
-    sequence: z.number().int().positive(),
-    session: SessionSchema,
-    motionDoc: z.string(),
-    assistantMessage: z.string(),
-    baseSourceRevision: z.string()
-  }),
-  z.object({
-    type: z.literal("cancelled"),
-    runId: z.string(),
-    sequence: z.number().int().positive(),
-    reason: z.string()
-  }),
-  z.object({
-    type: z.literal("error"),
-    runId: z.string(),
-    sequence: z.number().int().positive(),
-    message: z.string()
-  })
-]);
+export const SlideXRunResultSchema = z.object({
+  session: SessionSchema,
+  motionDoc: z.string(),
+  assistantMessage: z.string(),
+  baseSourceRevision: z.string()
+});
+
+export const AgentRunProtocol = new ConversationRunProtocolCodec({
+  activity: PublicConversationActivitySchema,
+  result: SlideXRunResultSchema
+});
+
+export const AgentRunEventSchema = AgentRunProtocol.eventSchema;
 
 export const AgentStreamEventSchema = z.discriminatedUnion("type", [
   z.object({
@@ -142,4 +134,7 @@ export type AgentStreamInput = z.infer<typeof AgentStreamInputSchema>;
 export type AgentStreamEvent = z.infer<typeof AgentStreamEventSchema>;
 export type StartAgentRunInput = z.infer<typeof StartAgentRunInputSchema>;
 export type StartAgentRunResult = z.infer<typeof StartAgentRunResultSchema>;
-export type AgentRunEvent = z.infer<typeof AgentRunEventSchema>;
+export type AgentRunEvent = ConversationRunProtocolEvent<
+  z.infer<typeof PublicConversationActivitySchema>,
+  z.infer<typeof SlideXRunResultSchema>
+>;

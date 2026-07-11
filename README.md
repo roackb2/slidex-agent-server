@@ -51,7 +51,10 @@ curl -sN -X POST http://localhost:3000/api/agent/stream \
 
 With `AGENT_DRIVER=heddle` the same call runs the real agent (needs a valid `llmApiKey` in the body and `MOTIONDOC_MCP_*` configured).
 
-The Heddle SDK is pinned to `@roackb2/heddle@4.2.0`. Set `AGENT_DRIVER=heddle` and point at the SlideX MotionDoc MCP command:
+The dogfood branch pins an exact unpublished Heddle commit so the integration
+can be verified before npm publication. Replace that commit pin with the exact
+released npm version before making the coordinated PRs merge-ready. Set
+`AGENT_DRIVER=heddle` and point at the SlideX MotionDoc MCP command:
 
 ```bash
 AGENT_DRIVER=heddle
@@ -128,3 +131,13 @@ Body:
 ```
 
 Events are emitted as normal SSE frames with `event:` and JSON `data:` fields: `session`, `status`, `tool`, `token`, `motionDoc`, `complete`, and `error`.
+
+The reconnectable run API used by the SlideX editor is:
+
+- `POST /api/agent/runs` to accept a run and return its `runId`.
+- `GET /api/agent/runs/:runId/events`, using either `?after=<sequence>` or
+  `Last-Event-ID`, to stream and replay canonical Heddle run events.
+- `POST /api/agent/runs/:runId/cancel` to request cancellation.
+
+Every SSE frame uses the canonical event `kind` as `event:`, its ordered
+`sequence` as `id:`, and the validated Heddle remote envelope as JSON `data:`.

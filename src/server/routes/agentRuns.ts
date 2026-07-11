@@ -1,5 +1,7 @@
+import { once } from "node:events";
 import type { Request, Response } from "express";
 import {
+  AgentRunProtocol,
   AgentRunEventSchema,
   StartAgentRunInputSchema,
   StartAgentRunResultSchema
@@ -27,12 +29,15 @@ export function createStartAgentRunHandler(deps: AgentRunRouteDeps) {
 
 export function createSubscribeAgentRunHandler(deps: AgentRunRouteDeps) {
   return async (req: Request, res: Response) => {
+    const subscription = new AbortController();
+    const abortSubscription = () => subscription.abort();
+    req.once("aborted", abortSubscription);
+    res.once("close", abortSubscription);
+
     try {
       const user = await deps.authService.requireUserFromRequest(req);
       const runId = requireRunId(req);
-      const afterSequence = parseReplayCursor(req.query.after);
-      const subscription = new AbortController();
-      req.on("close", () => subscription.abort());
+      const afterSequence = parseReplayCursor(req.query.after ?? req.header("Last-Event-ID"));
       const events = deps.agentRunService.subscribe({
         userId: user.id,
         runId,
@@ -42,17 +47,25 @@ export function createSubscribeAgentRunHandler(deps: AgentRunRouteDeps) {
 
       setSseHeaders(res);
       for await (const event of events) {
-        sendEvent(res, AgentRunEventSchema.parse(event));
+        await sendEvent(res, AgentRunEventSchema.parse(event), subscription.signal);
       }
-      res.end();
+      endResponse(res);
     } catch (error) {
+      if (subscription.signal.aborted) {
+        return;
+      }
       if (!res.headersSent) {
         sendRequestError(res, error);
         return;
       }
-      if (!res.destroyed && !res.writableEnded) {
-        res.end();
+      console.error(`[agent-runs] Event stream failed for ${req.params.runId ?? "unknown run"}`, error);
+      if (typeof error === "object" && error !== null && "issues" in error) {
+        console.error("[agent-runs] Validation issues", error.issues);
       }
+      endResponse(res);
+    } finally {
+      req.off("aborted", abortSubscription);
+      res.off("close", abortSubscription);
     }
   };
 }
@@ -78,13 +91,24 @@ function setSseHeaders(res: Response): void {
   res.flushHeaders?.();
 }
 
-function sendEvent(res: Response, event: ReturnType<typeof AgentRunEventSchema.parse>): void {
+async function sendEvent(
+  res: Response,
+  event: ReturnType<typeof AgentRunEventSchema.parse>,
+  signal: AbortSignal
+): Promise<void> {
   if (res.destroyed || res.writableEnded) {
     return;
   }
-  res.write(`event: ${event.type}\n`);
-  res.write(`id: ${event.sequence}\n`);
-  res.write(`data: ${JSON.stringify(event)}\n\n`);
+  const frame = `event: ${event.kind}\nid: ${event.sequence}\ndata: ${AgentRunProtocol.stringifyEvent(event)}\n\n`;
+  if (!res.write(frame)) {
+    await once(res, "drain", { signal });
+  }
+}
+
+function endResponse(res: Response): void {
+  if (!res.destroyed && !res.writableEnded) {
+    res.end();
+  }
 }
 
 function requireRunId(req: Request): string {

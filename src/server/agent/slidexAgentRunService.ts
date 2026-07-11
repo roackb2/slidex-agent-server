@@ -1,10 +1,12 @@
 import {
-  ConversationRunService,
   type ConversationEngine,
-  type ConversationRunHandle,
-  type ConversationRunStreamItem,
   type ConversationTurnResultSummary
 } from "@roackb2/heddle";
+import {
+  ConversationRunService,
+  type ConversationRunHandle,
+  type ConversationRunStreamItem
+} from "@roackb2/heddle/hosted";
 import type { AgentRunEvent, Session, StartAgentRunInput } from "../../shared/schema.js";
 import type { AuthUser } from "../auth.js";
 import type { Env } from "../env.js";
@@ -159,48 +161,38 @@ export class SlideXAgentRunService {
   ): AsyncIterable<AgentRunEvent> {
     for await (const event of events) {
       if (event.kind === "activity") {
-        yield {
-          type: "activity",
-          runId: event.runId,
-          sequence: event.sequence,
-          activity: event.activity
-        };
+        yield event;
         continue;
       }
       if (event.kind === "result") {
         try {
           const result = await context.result;
           yield {
-            type: "complete",
+            kind: "result",
             runId: event.runId,
             sequence: event.sequence,
-            ...result
+            timestamp: event.timestamp,
+            result
           };
         } catch (error) {
           yield {
-            type: "error",
+            kind: "error",
             runId: event.runId,
             sequence: event.sequence,
-            message: error instanceof Error ? error.message : String(error)
+            timestamp: event.timestamp,
+            error: {
+              code: "finalization_failed",
+              message: error instanceof Error ? error.message : String(error)
+            }
           };
         }
         continue;
       }
       if (event.kind === "cancelled") {
-        yield {
-          type: "cancelled",
-          runId: event.runId,
-          sequence: event.sequence,
-          reason: event.reason
-        };
+        yield event;
         continue;
       }
-      yield {
-        type: "error",
-        runId: event.runId,
-        sequence: event.sequence,
-        message: event.error.message
-      };
+      yield event;
     }
   }
 
