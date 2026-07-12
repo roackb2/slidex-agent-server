@@ -52,6 +52,14 @@ this composed test and use handler stubs only for isolated transport errors.
 
 The reconnectable run API is also default-off so deploying this branch preserves the upstream server behavior. Set `SLIDEX_AGENT_ENABLED=true` to register `/api/agent/runs`, `/api/agent/runs/:runId/events`, and `/api/agent/runs/:runId/cancel`. The SlideX editor must be built with `NEXT_PUBLIC_SLIDEX_AGENT_ENABLED=true` at the same time. Leave both flags unset or `false` to keep the conversational agent hidden; the existing `/api/agent/stream` route is unaffected.
 
+When that server flag is enabled in production, `CORS_ORIGIN` must be an
+explicit comma-separated allowlist such as `https://editor.example.com`; `*`
+and a missing value fail startup. Origins are normalized and matched exactly.
+Requests without an `Origin` header remain available to same-origin/server
+clients, while credential-bearing browser access uses an injected
+`Authorization` header—not cookies. CORS only controls browser read access and
+never replaces endpoint authentication.
+
 ### Testing without Supabase (dev auth bypass)
 
 If you don't have Supabase set up, enable `DEV_AUTH_BYPASS=1` (dev only — it is ignored when `NODE_ENV=production`). Every request then authenticates as `DEV_USER_ID` (default `dev-user`), so you can drive the tRPC procedures, the web UI, and `/api/agent/stream` with no token. Example — the full agent stream over HTTP:
@@ -100,6 +108,17 @@ bodies, and defense-in-depth redaction covers bearer credentials, cookies, and
 must not be logged. Set `LOG_LEVEL` to `fatal`, `error`, `warn`, `info`,
 `debug`, `trace`, or `silent`; production defaults to `info`.
 
+## Process lifecycle
+
+On `SIGTERM` or `SIGINT`, the server immediately stops accepting new HTTP
+connections and lets active requests—including an agent event stream—finish
+for up to `SHUTDOWN_GRACE_MS` (default 30 seconds). It then force-closes any
+remaining HTTP connections, stops owned subprocess resources, flushes logs,
+and exits. Repeated signals join the same shutdown instead of running cleanup
+twice. A forced close does not cancel a model/provider operation outside the
+process; durable conversation history remains available after restart, while
+process-local live-run replay does not.
+
 ## Railway
 
 Railway deploys from `railway.json` and `Dockerfile`.
@@ -115,6 +134,7 @@ VITE_SUPABASE_URL=...
 VITE_SUPABASE_ANON_KEY=...
 DEFAULT_MODEL=gpt-4.1
 LOG_LEVEL=info
+SHUTDOWN_GRACE_MS=30000
 HEDDLE_WORKSPACE_ROOT=/app
 MOTIONDOC_MCP_COMMAND=...
 MOTIONDOC_MCP_ARGS=...

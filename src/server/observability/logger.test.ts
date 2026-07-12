@@ -97,6 +97,7 @@ function createTestEnv(): Env {
     SLIDEX_AGENT_ENABLED: false,
     DEFAULT_MODEL: "gpt-test",
     LOG_LEVEL: "info",
+    SHUTDOWN_GRACE_MS: 30_000,
     dataDir: "/tmp/slidex-agent-logger-test"
   };
 }

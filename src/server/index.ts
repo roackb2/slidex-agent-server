@@ -2,6 +2,7 @@ import "dotenv/config";
 import { AuthService } from "./auth.js";
 import { createApp } from "./app.js";
 import { loadEnv } from "./env.js";
+import { createGracefulShutdown } from "./lifecycle/gracefulShutdown.js";
 import { StdioMcpProcessManager } from "./mcp/stdioMcp.js";
 import { createServerLogger } from "./observability/logger.js";
 import { SessionStore } from "./storage/sessionStore.js";
@@ -41,12 +42,16 @@ server.on("error", (error: NodeJS.ErrnoException) => {
   throw error;
 });
 
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
+const shutdown = createGracefulShutdown({
+  server,
+  logger,
+  graceMs: env.SHUTDOWN_GRACE_MS,
+  stopResources: () => mcpManager.stop(),
+  exit: (code) => {
+    logger.flush();
+    process.exit(code);
+  }
+});
 
-async function shutdown() {
-  logger.info({ event: "server.stopping" }, "Shutting down SlideX agent server");
-  server.close();
-  await mcpManager.stop();
-  process.exit(0);
-}
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
