@@ -40,6 +40,14 @@ local sessions, the reconnectable Heddle run lifecycle, SSE, cancellation, and
 MotionDoc updates without calling an LLM. Mock and real modes use the same
 `SlideXAgentRunService`; only model/tool execution changes.
 
+`npm test` includes a deterministic full-application regression that enables
+the reconnectable API with the non-production auth bypass, then exercises
+start, canonical SSE activity/result delivery, cursor-bounded replay, history
+hydration, a second turn, and conversation reset through real HTTP routes. The
+same test, typecheck, and build run in
+`.github/workflows/agent-regression.yml`. Keep product lifecycle assertions in
+this composed test and use handler stubs only for isolated transport errors.
+
 The reconnectable run API is also default-off so deploying this branch preserves the upstream server behavior. Set `SLIDEX_AGENT_ENABLED=true` to register `/api/agent/runs`, `/api/agent/runs/:runId/events`, and `/api/agent/runs/:runId/cancel`. The SlideX editor must be built with `NEXT_PUBLIC_SLIDEX_AGENT_ENABLED=true` at the same time. Leave both flags unset or `false` to keep the conversational agent hidden; the existing `/api/agent/stream` route is unaffected.
 
 ### Testing without Supabase (dev auth bypass)

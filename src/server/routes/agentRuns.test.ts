@@ -12,7 +12,14 @@ import { StdioMcpProcessManager } from "../mcp/stdioMcp.js";
 import { SessionStore } from "../storage/sessionStore.js";
 import type { SlideXAgentRunService } from "../agent/slidexAgentRunService.js";
 import { SlideXAgentRunServiceError } from "../agent/slidexAgentRunService.js";
-import type { AgentRunEvent, Session } from "../../shared/schema.js";
+import {
+  AgentRunEventSchema,
+  AgentSessionStateSchema,
+  StartAgentRunResultSchema,
+  type AgentRunEvent,
+  type Session,
+  type StartAgentRunInput
+} from "../../shared/schema.js";
 import {
   createCancelAgentRunHandler,
   createGetAgentSessionHandler,
@@ -38,7 +45,7 @@ test("defaults the reconnectable run API flag to disabled", () => {
 });
 
 test("keeps the reconnectable run API hidden while preserving the legacy stream when disabled", async () => {
-  await withAgentFeature(false, async (baseUrl) => {
+  await withMockAgentApp({ enabled: false }, async (baseUrl) => {
     const runResponse = await postJson(`${baseUrl}/api/agent/runs`);
     const sessionResponse = await fetch(`${baseUrl}/api/agent/sessions/session-1`);
     const legacyResponse = await postJson(`${baseUrl}/api/agent/stream`);
@@ -50,12 +57,79 @@ test("keeps the reconnectable run API hidden while preserving the legacy stream 
 });
 
 test("registers the reconnectable run API when explicitly enabled", async () => {
-  await withAgentFeature(true, async (baseUrl) => {
+  await withMockAgentApp({ enabled: true }, async (baseUrl) => {
     const runResponse = await postJson(`${baseUrl}/api/agent/runs`);
     const sessionResponse = await fetch(`${baseUrl}/api/agent/sessions/session-1`);
 
     assert.equal(runResponse.status, 401);
     assert.equal(sessionResponse.status, 401);
+  });
+});
+
+test("runs a multi-turn conversation through the composed mock HTTP API", async () => {
+  await withMockAgentApp({ enabled: true, devAuthBypass: true }, async (baseUrl) => {
+    const first = await startAgentRun(baseUrl, {
+      title: "API lifecycle deck",
+      message: "Make the opening slide clearer",
+      motionDoc: "# Opening",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key"
+    });
+    const firstEvents = await subscribeAgentRun(baseUrl, first.runId);
+    const firstTerminal = firstEvents.at(-1);
+
+    assert.ok(firstEvents.some(({ kind }) => kind === "activity"));
+    assert.ok(firstTerminal?.kind === "result");
+    assert.match(firstTerminal.result.motionDoc, /Make the opening slide clearer/);
+    assert.equal(firstTerminal.result.baseSourceRevision, "revision-1");
+
+    const replay = await subscribeAgentRun(
+      baseUrl,
+      first.runId,
+      firstTerminal.sequence - 1
+    );
+    assert.deepEqual(
+      replay.map(({ kind, sequence }) => ({ kind, sequence })),
+      [{ kind: "result", sequence: firstTerminal.sequence }]
+    );
+
+    const firstState = await readAgentSession(baseUrl, first.session.id);
+    assert.equal(firstState.activeRun, null);
+    assert.equal(firstState.session.latestMotionDoc, firstTerminal.result.motionDoc);
+    assert.deepEqual(
+      firstState.session.messages.map(({ role }) => role),
+      ["user", "assistant"]
+    );
+
+    const second = await startAgentRun(baseUrl, {
+      sessionId: first.session.id,
+      message: "Make the title more concise",
+      motionDoc: firstTerminal.result.motionDoc,
+      sourceRevision: "revision-2",
+      llmApiKey: "test-api-key"
+    });
+    assert.equal(second.session.id, first.session.id);
+    const secondEvents = await subscribeAgentRun(baseUrl, second.runId);
+    const secondTerminal = secondEvents.at(-1);
+    assert.ok(secondTerminal?.kind === "result");
+    assert.match(secondTerminal.result.motionDoc, /Make the title more concise/);
+
+    const secondState = await readAgentSession(baseUrl, first.session.id);
+    assert.deepEqual(
+      secondState.session.messages.map(({ role }) => role),
+      ["user", "assistant", "user", "assistant"]
+    );
+    assert.equal(secondState.session.latestMotionDoc, secondTerminal.result.motionDoc);
+
+    const reset = await fetch(`${baseUrl}/api/agent/sessions/${first.session.id}`, {
+      method: "DELETE"
+    });
+    assert.equal(reset.status, 200);
+    assert.deepEqual(await reset.json(), { reset: true });
+
+    const missing = await fetch(`${baseUrl}/api/agent/sessions/${first.session.id}`);
+    assert.equal(missing.status, 404);
+    assert.equal(await readErrorCode(missing), "session_not_found");
   });
 });
 
@@ -255,6 +329,16 @@ async function withHttpServer(
 }
 
 function parseSseFrames(text: string) {
+  return parseSseEvents(text)
+    .map((payload) => ({
+      event: payload.kind,
+      id: String(payload.sequence),
+      kind: payload.kind,
+      sequence: payload.sequence
+    }));
+}
+
+function parseSseEvents(text: string): AgentRunEvent[] {
   return text
     .trim()
     .split("\n\n")
@@ -265,22 +349,26 @@ function parseSseFrames(text: string) {
       })
     ))
     .map(({ event, id, data }) => {
-      const payload = JSON.parse(data) as AgentRunEvent;
-      return { event, id, kind: payload.kind, sequence: payload.sequence };
+      const payload = AgentRunEventSchema.parse(JSON.parse(data));
+      assert.equal(event, payload.kind);
+      assert.equal(id, String(payload.sequence));
+      return payload;
     });
 }
 
-async function withAgentFeature(
-  enabled: boolean,
+async function withMockAgentApp(
+  options: { enabled: boolean; devAuthBypass?: boolean },
   run: (baseUrl: string) => Promise<void>
 ): Promise<void> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "slidex-agent-flag-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "slidex-agent-app-"));
   const env: Env = {
     NODE_ENV: "test",
     PORT: 3000,
     AGENT_DRIVER: "mock",
-    SLIDEX_AGENT_ENABLED: enabled,
+    SLIDEX_AGENT_ENABLED: options.enabled,
     DEFAULT_MODEL: "gpt-test",
+    DEV_AUTH_BYPASS: options.devAuthBypass ? "1" : undefined,
+    DEV_USER_ID: "api-test-user",
     dataDir: root
   };
   const mcpManager = new StdioMcpProcessManager(env);
@@ -304,6 +392,38 @@ async function withAgentFeature(
     await mcpManager.stop();
     await fs.rm(root, { recursive: true, force: true });
   }
+}
+
+async function startAgentRun(
+  baseUrl: string,
+  input: StartAgentRunInput
+) {
+  const response = await fetch(`${baseUrl}/api/agent/runs`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input)
+  });
+  assert.equal(response.status, 202);
+  return StartAgentRunResultSchema.parse(await response.json());
+}
+
+async function subscribeAgentRun(
+  baseUrl: string,
+  runId: string,
+  afterSequence = 0
+): Promise<AgentRunEvent[]> {
+  const response = await fetch(
+    `${baseUrl}/api/agent/runs/${runId}/events?after=${afterSequence}`
+  );
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/event-stream/);
+  return parseSseEvents(await response.text());
+}
+
+async function readAgentSession(baseUrl: string, sessionId: string) {
+  const response = await fetch(`${baseUrl}/api/agent/sessions/${sessionId}`);
+  assert.equal(response.status, 200);
+  return AgentSessionStateSchema.parse(await response.json());
 }
 
 function postJson(url: string): Promise<Response> {
