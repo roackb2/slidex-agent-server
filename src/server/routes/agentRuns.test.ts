@@ -30,18 +30,7 @@ import {
 } from "./agentRuns.js";
 
 test("defaults the reconnectable run API flag to disabled", () => {
-  const previous = process.env.SLIDEX_AGENT_ENABLED;
-  delete process.env.SLIDEX_AGENT_ENABLED;
-
-  try {
-    assert.equal(loadEnv().SLIDEX_AGENT_ENABLED, false);
-  } finally {
-    if (previous === undefined) {
-      delete process.env.SLIDEX_AGENT_ENABLED;
-    } else {
-      process.env.SLIDEX_AGENT_ENABLED = previous;
-    }
-  }
+  assert.equal(loadEnv({}).SLIDEX_AGENT_ENABLED, false);
 });
 
 test("keeps the reconnectable run API hidden while preserving the legacy stream when disabled", async () => {
@@ -53,6 +42,59 @@ test("keeps the reconnectable run API hidden while preserving the legacy stream 
     assert.equal(runResponse.status, 404);
     assert.equal(sessionResponse.status, 404);
     assert.equal(legacyResponse.status, 401);
+  });
+});
+
+test("enforces an exact credential-free browser CORS allowlist", async () => {
+  await withMockAgentApp({
+    enabled: true,
+    corsOrigin: "https://Editor.Example/, https://preview.example"
+  }, async (baseUrl) => {
+    const allowed = await fetch(`${baseUrl}/healthz`, {
+      headers: { origin: "https://editor.example" }
+    });
+    assert.equal(allowed.status, 200);
+    assert.equal(
+      allowed.headers.get("access-control-allow-origin"),
+      "https://editor.example"
+    );
+    assert.match(allowed.headers.get("vary") ?? "", /Origin/);
+    assert.equal(allowed.headers.get("access-control-allow-credentials"), null);
+
+    const denied = await fetch(`${baseUrl}/healthz`, {
+      headers: { origin: "https://malicious.example" }
+    });
+    assert.equal(denied.status, 200);
+    assert.equal(denied.headers.get("access-control-allow-origin"), null);
+
+    const preflight = await fetch(`${baseUrl}/api/agent/runs`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://preview.example",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "authorization,content-type"
+      }
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(
+      preflight.headers.get("access-control-allow-origin"),
+      "https://preview.example"
+    );
+    const allowedMethods = preflight.headers.get("access-control-allow-methods") ?? "";
+    const allowedHeaders = preflight.headers.get("access-control-allow-headers") ?? "";
+    assert.match(allowedMethods, /POST/);
+    assert.match(allowedHeaders, /authorization/i);
+    assert.match(allowedHeaders, /content-type/i);
+    assert.equal(preflight.headers.get("access-control-allow-credentials"), null);
+
+    const deniedPreflight = await fetch(`${baseUrl}/api/agent/runs`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://malicious.example",
+        "access-control-request-method": "POST"
+      }
+    });
+    assert.equal(deniedPreflight.headers.get("access-control-allow-origin"), null);
   });
 });
 
@@ -417,6 +459,7 @@ function parseSseEvents(text: string): AgentRunEvent[] {
 async function withMockAgentApp(
   options: {
     enabled: boolean;
+    corsOrigin?: string;
     devAuthBypass?: boolean;
     nodeEnv?: Env["NODE_ENV"];
   },
@@ -429,6 +472,11 @@ async function withMockAgentApp(
     AGENT_DRIVER: "mock",
     SLIDEX_AGENT_ENABLED: options.enabled,
     DEFAULT_MODEL: "gpt-test",
+    CORS_ORIGIN: options.corsOrigin ?? (
+      options.nodeEnv === "production" && options.enabled
+        ? "https://editor.example"
+        : undefined
+    ),
     LOG_LEVEL: "silent",
     SHUTDOWN_GRACE_MS: 30_000,
     DEV_AUTH_BYPASS: options.devAuthBypass ? "1" : undefined,
