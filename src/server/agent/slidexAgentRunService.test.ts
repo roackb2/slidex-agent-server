@@ -271,6 +271,41 @@ test("sanitizes run failures and persists their terminal meaning", async () => {
   }
 });
 
+test("keeps result persistence failures distinct without exposing storage details", async () => {
+  const turn = deferred<void>();
+  const fixture = await createFixture(createEngine(async () => {
+    await turn.promise;
+    return createTurnResult();
+  }));
+  try {
+    const accepted = await fixture.service.start(fixture.user, {
+      message: "Update it",
+      motionDoc: "# Original deck",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key"
+    });
+    fixture.sessionStore.writeSession = async () => {
+      throw new Error("sensitive storage failure detail");
+    };
+    turn.resolve();
+
+    const events = await collect(fixture.service.subscribe({
+      userId: fixture.user.id,
+      runId: accepted.runId
+    }));
+    const terminal = events.at(-1);
+
+    assert.ok(terminal && terminal.kind === "error");
+    assert.deepEqual(terminal.error, {
+      code: "finalization_failed",
+      message: "The agent finished, but its deck result could not be saved"
+    });
+    assert.doesNotMatch(JSON.stringify(terminal), /sensitive storage/);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("resets product state without allowing an in-flight run to recreate it", async () => {
   const turn = deferred<void>();
   const fixture = await createFixture(createEngine(async () => {

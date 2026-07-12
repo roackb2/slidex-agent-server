@@ -14,14 +14,18 @@ This directory owns the SlideX-specific orchestration around the Heddle SDK.
   responsible for execution, cancellation, ordered activity events, and replay;
   this service adds product authorization, chat persistence, MotionDoc
   finalization, session hydration/reset, active-run discovery, and the product
-  result projection. Active-run lookup and reset cancellation delegate to the
-  existing Heddle run service; do not add a second run registry.
+  result/error projection. Active-run lookup, retained-run authorization,
+  terminal publication, replay expiry, and reset cancellation delegate to the
+  existing Heddle run service; do not add a second run registry or terminal
+  event mapper.
 - `types.ts` and `runtime.ts` retain the legacy request-bound streaming driver
   while clients migrate to the reconnectable run protocol.
 
 The public run envelope and runtime payload validation come from
-`@roackb2/heddle-remote`. HTTP/SSE handles, authentication, and route policy
-remain in `server/routes`. MotionDoc editing logic belongs in the MCP extension.
+`@roackb2/heddle-remote`. The route composes Heddle's Node HTTP/SSE helper for
+cursor parsing, framing, backpressure, and subscriber cleanup. Authentication,
+authorization, API errors, CORS, and route policy remain in `server/routes`.
+MotionDoc editing logic belongs in the MCP extension.
 The shared schema projects Heddle's rich internal activities to the small
 JSON-safe shape consumed by SlideX (`type`, `text`, `tool`, and `result.ok`);
 internal engine state and traces must not cross the product API. Generic run

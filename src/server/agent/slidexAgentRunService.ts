@@ -1,11 +1,9 @@
+import type { ConversationEngine } from "@roackb2/heddle";
 import {
-  type ConversationEngine,
-  type ConversationTurnResultSummary
-} from "@roackb2/heddle";
-import {
+  ConversationRunConflictError,
+  ConversationRunReplayUnavailableError,
   ConversationRunService,
-  type ConversationRunHandle,
-  type ConversationRunStreamItem
+  type ConversationRunHandle
 } from "@roackb2/heddle/hosted";
 import type {
   AgentApiErrorCode,
@@ -38,13 +36,8 @@ type SlideXRunResult = {
   baseSourceRevision: string;
 };
 
-type SlideXRunContext = {
-  address: SlideXRunAddress;
-  run: ConversationRunHandle<SlideXRunAddress, ConversationTurnResultSummary>;
-  result: Promise<SlideXRunResult>;
-};
-
 class SlideXAgentSessionResetError extends Error {}
+class SlideXAgentResultFinalizationError extends Error {}
 
 type CreateEngine = (
   env: Env,
@@ -97,8 +90,6 @@ export class SlideXAgentRunService {
     addressKey: ({ userId, sessionId }) => `${userId}:${sessionId}`,
     replay: { maxEventsPerRun: 512, retentionMs: 5 * 60_000 }
   });
-  private readonly contexts = new Map<string, SlideXRunContext>();
-  private readonly cancelledRunIds = new Set<string>();
   private readonly resetAddresses = new Set<string>();
   private readonly createEngine: CreateEngine;
   private readonly logger: AgentRunLogger;
@@ -140,18 +131,113 @@ export class SlideXAgentRunService {
     const conversation = resolveConversationSession(engine, session.id, model);
     const previousArtifactId = engine.artifacts.current(conversation.id)?.id;
 
-    const run = this.runs.startTurn({
-      address,
-      engine,
-      turn: {
-        sessionId: conversation.id,
-        prompt: buildPrompt(input),
-        maxSteps: 24,
-        host: createSlideXApprovalHost()
+    const key = addressKey(address);
+    let acceptedSession: Promise<Session>;
+    let run: ConversationRunHandle<SlideXRunAddress, SlideXRunResult>;
+    try {
+      run = this.runs.startTurn({
+        address,
+        engine,
+        turn: {
+          sessionId: conversation.id,
+          prompt: buildPrompt(input),
+          maxSteps: 24,
+          host: createSlideXApprovalHost()
+        },
+        projectResult: async (turnResult, runContext) => {
+          if (this.resetAddresses.has(key)) {
+            throw new SlideXAgentSessionResetError();
+          }
+          try {
+            const currentSession = await acceptedSession;
+            const motionDoc = resolveMotionDoc(
+              engine,
+              conversation.id,
+              previousArtifactId,
+              input.motionDoc
+            );
+            currentSession.latestMotionDoc = motionDoc;
+            currentSession.messages.push(
+              makeMessage({
+                role: "assistant",
+                content: turnResult.summary,
+                metadata: {
+                  outcome: turnResult.outcome,
+                  runId: runContext.runId,
+                  toolCalls: turnResult.toolResults.length
+                }
+              })
+            );
+            const persistedSession = await this.options.sessionStore.writeSession(currentSession);
+            this.logger.info({
+              event: "agent_run.terminal",
+              runId: runContext.runId,
+              sessionId: session.id,
+              model,
+              outcome: turnResult.outcome,
+              durationMs: Date.now() - startedAt,
+              toolCallCount: turnResult.toolResults.length,
+              ...correlation
+            }, "Agent run completed");
+            return {
+              session: persistedSession,
+              motionDoc,
+              assistantMessage: turnResult.summary,
+              baseSourceRevision: input.sourceRevision
+            };
+          } catch {
+            throw new SlideXAgentResultFinalizationError();
+          }
+        },
+        onError: async (error, runContext) => {
+          const cancelled = runContext.controller.signal.aborted;
+          await this.persistTerminalFailure({
+            acceptedSession,
+            addressKey: key,
+            runId: runContext.runId,
+            cancelled
+          });
+          const fields = {
+            event: "agent_run.terminal",
+            runId: runContext.runId,
+            sessionId: session.id,
+            model,
+            outcome: cancelled ? "cancelled" : "error",
+            durationMs: Date.now() - startedAt,
+            ...correlation
+          };
+          if (cancelled) {
+            this.logger.info(fields, "Agent run cancelled");
+          } else if (error instanceof SlideXAgentResultFinalizationError) {
+            this.logger.warn(fields, "Agent run result finalization failed");
+          } else {
+            this.logger.warn(fields, "Agent run failed");
+          }
+        },
+        projectError: (error) => error instanceof SlideXAgentResultFinalizationError
+          ? {
+              code: "finalization_failed",
+              message: "The agent finished, but its deck result could not be saved"
+            }
+          : {
+              code: "run_failed",
+              message: "The agent could not complete this request. Try again."
+            },
+        onSettled: () => {
+          this.resetAddresses.delete(key);
+        }
+      });
+    } catch (error) {
+      if (error instanceof ConversationRunConflictError) {
+        throw new SlideXAgentRunServiceError(
+          "active_run_conflict",
+          "An agent run is already in progress for this conversation"
+        );
       }
-    });
+      throw error;
+    }
 
-    const acceptedSession = this.persistAcceptedMessage(session, input, run.runId)
+    acceptedSession = this.persistAcceptedMessage(session, input, run.runId)
       .then((persistedSession) => {
         this.logger.info({
           event: "agent_run.accepted",
@@ -162,78 +248,6 @@ export class SlideXAgentRunService {
         }, "Agent run accepted");
         return persistedSession;
       });
-    const key = addressKey(address);
-    const result = run.result
-      .then(async (turnResult) => {
-        if (this.resetAddresses.has(key)) {
-          throw new SlideXAgentSessionResetError(
-            "SlideX agent conversation was reset during the run"
-          );
-        }
-        const currentSession = await acceptedSession;
-        const motionDoc = resolveMotionDoc(
-          engine,
-          conversation.id,
-          previousArtifactId,
-          input.motionDoc
-        );
-        currentSession.latestMotionDoc = motionDoc;
-        currentSession.messages.push(
-          makeMessage({
-            role: "assistant",
-            content: turnResult.summary,
-            metadata: {
-              outcome: turnResult.outcome,
-              runId: run.runId,
-              toolCalls: turnResult.toolResults.length
-            }
-          })
-        );
-        const persistedSession = await this.options.sessionStore.writeSession(currentSession);
-        this.logger.info({
-          event: "agent_run.terminal",
-          runId: run.runId,
-          sessionId: session.id,
-          model,
-          outcome: turnResult.outcome,
-          durationMs: Date.now() - startedAt,
-          toolCallCount: turnResult.toolResults.length,
-          ...correlation
-        }, "Agent run completed");
-        return {
-          session: persistedSession,
-          motionDoc,
-          assistantMessage: turnResult.summary,
-          baseSourceRevision: input.sourceRevision
-        };
-      })
-      .catch(async (error: unknown) => {
-        const cancelled = this.cancelledRunIds.has(run.runId);
-        await this.persistTerminalFailure({
-          acceptedSession,
-          addressKey: key,
-          runId: run.runId
-        });
-        const fields = {
-          event: "agent_run.terminal",
-          runId: run.runId,
-          sessionId: session.id,
-          model,
-          outcome: cancelled ? "cancelled" : "error",
-          durationMs: Date.now() - startedAt,
-          ...correlation
-        };
-        if (cancelled) {
-          this.logger.info(fields, "Agent run cancelled");
-        } else {
-          this.logger.warn(fields, "Agent run failed");
-        }
-        throw error;
-      });
-    result.catch(() => undefined);
-
-    this.contexts.set(run.runId, { address, run, result });
-    this.expireContext(run.runId, key, result);
 
     try {
       const persistedSession = await acceptedSession;
@@ -255,15 +269,14 @@ export class SlideXAgentRunService {
     afterSequence?: number;
     signal?: AbortSignal;
   }): AsyncIterable<AgentRunEvent> {
-    const context = this.requireOwnedRun(input.userId, input.runId);
-    let events: AsyncIterable<ConversationRunStreamItem<ConversationTurnResultSummary>>;
+    const run = this.requireOwnedRun(input.userId, input.runId);
     try {
-      events = context.run.events({
+      return run.events({
         afterSequence: input.afterSequence,
         signal: input.signal
       });
     } catch (error) {
-      if (isReplayUnavailable(error)) {
+      if (error instanceof ConversationRunReplayUnavailableError) {
         throw new SlideXAgentRunServiceError(
           "replay_unavailable",
           "Live agent progress is no longer available; refresh the conversation history"
@@ -271,7 +284,6 @@ export class SlideXAgentRunService {
       }
       throw error;
     }
-    return this.mapRunEvents(context, events);
   }
 
   async getSessionState(userId: string, sessionId: string): Promise<AgentSessionState> {
@@ -294,9 +306,7 @@ export class SlideXAgentRunService {
 
     if (activeRun) {
       const cancelled = this.runs.cancelRun(address, activeRun.runId);
-      if (cancelled) {
-        this.cancelledRunIds.add(activeRun.runId);
-      } else {
+      if (!cancelled) {
         this.resetAddresses.delete(key);
       }
     }
@@ -319,71 +329,14 @@ export class SlideXAgentRunService {
     }
   }
 
-  private async *mapRunEvents(
-    context: SlideXRunContext,
-    events: AsyncIterable<ConversationRunStreamItem<ConversationTurnResultSummary>>
-  ): AsyncIterable<AgentRunEvent> {
-    for await (const event of events) {
-      if (event.kind === "activity") {
-        yield event;
-        continue;
-      }
-      if (event.kind === "result") {
-        try {
-          const result = await context.result;
-          yield {
-            kind: "result",
-            runId: event.runId,
-            sequence: event.sequence,
-            timestamp: event.timestamp,
-            result
-          };
-        } catch (error) {
-          if (!(error instanceof SlideXAgentSessionResetError)) {
-            this.logger.warn({
-              event: "agent_run.finalization_failed",
-              runId: event.runId,
-              sessionId: context.address.sessionId
-            }, "Agent run finalization failed");
-          }
-          yield {
-            kind: "error",
-            runId: event.runId,
-            sequence: event.sequence,
-            timestamp: event.timestamp,
-            error: {
-              code: "finalization_failed",
-              message: "The agent finished, but its deck result could not be saved"
-            }
-          };
-        }
-        continue;
-      }
-      if (event.kind === "cancelled") {
-        await context.result.catch(() => undefined);
-        yield event;
-        continue;
-      }
-      await context.result.catch(() => undefined);
-      yield {
-        ...event,
-        error: {
-          code: event.error.code,
-          message: "The agent could not complete this request. Try again."
-        }
-      };
-    }
-  }
-
   cancel(userId: string, runId: string): boolean {
-    const context = this.requireOwnedRun(userId, runId);
-    const cancelled = context.run.cancel();
+    const run = this.requireOwnedRun(userId, runId);
+    const cancelled = run.cancel();
     if (cancelled) {
-      this.cancelledRunIds.add(runId);
       this.logger.info({
         event: "agent_run.cancel_requested",
         runId,
-        sessionId: context.address.sessionId
+        sessionId: run.sessionId
       }, "Agent run cancellation requested");
     }
     return cancelled;
@@ -426,55 +379,40 @@ export class SlideXAgentRunService {
     acceptedSession: Promise<Session>;
     addressKey: string;
     runId: string;
+    cancelled: boolean;
   }): Promise<void> {
     if (this.resetAddresses.has(input.addressKey)) {
       return;
     }
 
     const session = await input.acceptedSession;
-    const cancelled = this.cancelledRunIds.has(input.runId);
     session.messages.push(makeMessage({
       role: "assistant",
-      content: cancelled
+      content: input.cancelled
         ? "Run cancelled."
         : "The agent could not complete this request. Try again.",
       metadata: {
-        outcome: cancelled ? "cancelled" : "error",
+        outcome: input.cancelled ? "cancelled" : "error",
         runId: input.runId
       }
     }));
     await this.options.sessionStore.writeSession(session);
   }
 
-  private requireOwnedRun(userId: string, runId: string): SlideXRunContext {
-    const context = this.contexts.get(runId);
-    if (!context || context.address.userId !== userId) {
+  private requireOwnedRun(
+    userId: string,
+    runId: string
+  ): ConversationRunHandle<SlideXRunAddress, SlideXRunResult> {
+    const run = this.runs.getRetainedRun<SlideXRunResult>(runId);
+    if (!run || run.userId !== userId) {
       throw new SlideXAgentRunServiceError("run_not_found", "Agent run not found");
     }
-    return context;
-  }
-
-  private expireContext(
-    runId: string,
-    key: string,
-    result: Promise<SlideXRunResult>
-  ): void {
-    void result.finally(() => {
-      this.cancelledRunIds.delete(runId);
-      this.resetAddresses.delete(key);
-      const timer = setTimeout(() => this.contexts.delete(runId), 5 * 60_000);
-      timer.unref?.();
-    }).catch(() => undefined);
+    return run;
   }
 }
 
 function addressKey(address: SlideXRunAddress): string {
   return `${address.userId}:${address.sessionId}`;
-}
-
-function isReplayUnavailable(error: unknown): boolean {
-  return error instanceof Error
-    && error.message.includes("older than retained sequence");
 }
 
 function titleFromMessage(message: string): string {

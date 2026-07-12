@@ -1,11 +1,14 @@
-import { once } from "node:events";
 import type { Request, Response } from "express";
 import { ZodError } from "zod";
+import {
+  ConversationRunSseReplayCursorError,
+  parseConversationRunSseReplayCursor,
+  streamConversationRunSse
+} from "@roackb2/heddle/hosted/http-sse";
 import {
   AgentApiErrorResponseSchema,
   AgentSessionStateSchema,
   AgentRunProtocol,
-  AgentRunEventSchema,
   ResetAgentSessionResultSchema,
   StartAgentRunInputSchema,
   StartAgentRunResultSchema,
@@ -40,31 +43,25 @@ export function createStartAgentRunHandler(deps: AgentRunRouteDeps) {
 
 export function createSubscribeAgentRunHandler(deps: AgentRunRouteDeps) {
   return async (req: Request, res: Response) => {
-    const subscription = new AbortController();
-    const abortSubscription = () => subscription.abort();
-    req.once("aborted", abortSubscription);
-    res.once("close", abortSubscription);
-
     try {
       const user = await deps.authService.requireUserFromRequest(req);
       const runId = requireRunId(req);
-      const afterSequence = parseReplayCursor(req.query.after ?? req.header("Last-Event-ID"));
-      const events = deps.agentRunService.subscribe({
-        userId: user.id,
-        runId,
-        afterSequence,
-        signal: subscription.signal
+      const afterSequence = parseConversationRunSseReplayCursor({
+        query: req.query.after,
+        lastEventId: req.header("Last-Event-ID")
       });
-
-      setSseHeaders(res);
-      for await (const event of events) {
-        await sendEvent(res, AgentRunEventSchema.parse(event), subscription.signal);
-      }
-      endResponse(res);
+      await streamConversationRunSse({
+        request: req,
+        response: res,
+        protocol: AgentRunProtocol,
+        subscribe: (signal) => deps.agentRunService.subscribe({
+          userId: user.id,
+          runId,
+          afterSequence,
+          signal
+        })
+      });
     } catch (error) {
-      if (subscription.signal.aborted) {
-        return;
-      }
       if (!res.headersSent) {
         sendRequestError(res, error);
         return;
@@ -75,10 +72,6 @@ export function createSubscribeAgentRunHandler(deps: AgentRunRouteDeps) {
         errorType: errorType(error),
         validationIssueCount: validationIssueCount(error)
       }, "Agent event stream failed");
-      endResponse(res);
-    } finally {
-      req.off("aborted", abortSubscription);
-      res.off("close", abortSubscription);
     }
   };
 }
@@ -119,35 +112,6 @@ export function createCancelAgentRunHandler(deps: AgentRunRouteDeps) {
   };
 }
 
-function setSseHeaders(res: Response): void {
-  res.status(200);
-  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.flushHeaders?.();
-}
-
-async function sendEvent(
-  res: Response,
-  event: ReturnType<typeof AgentRunEventSchema.parse>,
-  signal: AbortSignal
-): Promise<void> {
-  if (res.destroyed || res.writableEnded) {
-    return;
-  }
-  const frame = `event: ${event.kind}\nid: ${event.sequence}\ndata: ${AgentRunProtocol.stringifyEvent(event)}\n\n`;
-  if (!res.write(frame)) {
-    await once(res, "drain", { signal });
-  }
-}
-
-function endResponse(res: Response): void {
-  if (!res.destroyed && !res.writableEnded) {
-    res.end();
-  }
-}
-
 function requireRunId(req: Request): string {
   const runId = req.params.runId;
   if (!runId) {
@@ -162,20 +126,6 @@ function requireSessionId(req: Request): string {
     throw new SlideXAgentRunServiceError("invalid_request", "Conversation id is required");
   }
   return sessionId;
-}
-
-function parseReplayCursor(value: unknown): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const cursor = Number(value);
-  if (!Number.isSafeInteger(cursor) || cursor < 0) {
-    throw new SlideXAgentRunServiceError(
-      "invalid_request",
-      "Agent run replay cursor must be a non-negative integer"
-    );
-  }
-  return cursor;
 }
 
 function sendRequestError(res: Response, error: unknown): void {
@@ -236,7 +186,7 @@ function toAgentApiError(error: unknown): {
       status: ERROR_STATUS[error.code]
     };
   }
-  if (error instanceof ZodError) {
+  if (error instanceof ConversationRunSseReplayCursorError || error instanceof ZodError) {
     return {
       code: "invalid_request",
       message: "The agent request was invalid",

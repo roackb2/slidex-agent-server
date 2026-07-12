@@ -74,10 +74,11 @@ curl -sN -X POST http://localhost:3000/api/agent/stream \
 
 With `AGENT_DRIVER=heddle` the same call runs the real agent (needs a valid `llmApiKey` in the body and `MOTIONDOC_MCP_*` configured).
 
-The dogfood branch pins an exact unpublished Heddle commit so the integration
-can be verified before npm publication. Replace that commit pin with the exact
-released npm version before making the coordinated PRs merge-ready. Set
-`AGENT_DRIVER=heddle` and point at the SlideX MotionDoc MCP command:
+For pre-publication dogfood, install exact locally packed Heddle tarballs with
+`npm install --no-save --package-lock=false /path/to/package.tgz`. Keep the
+committed manifests on registry versions; update them to the exact new release
+only after the local integration proof passes. Set `AGENT_DRIVER=heddle` and
+point at the SlideX MotionDoc MCP command:
 
 ```bash
 AGENT_DRIVER=heddle
