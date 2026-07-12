@@ -42,6 +42,106 @@ The API server binds `PORT` and the bundled Vite proxy reads the same value.
 If the selected API port is taken, change `PORT` in `.env`; the server exits
 with a clear bind error rather than silently choosing a different API port.
 
+## Anonymous BYOK product acceptance
+
+Use this path when you want to test the same boundaries as the SlideX editor,
+not the development auth bypass. The local workspace is deliberately kept in
+the ignored `.local/` directory: Supabase containers/configuration, local
+session data, and prerelease package tarballs must not be committed.
+
+Prerequisites are Node.js 20+ and a Docker-compatible runtime such as Docker
+Desktop or OrbStack. Initialize the official Supabase CLI project once:
+
+```bash
+mkdir -p .local/supabase
+npx supabase --workdir .local/supabase init
+```
+
+In `.local/supabase/supabase/config.toml`, use a unique `project_id`, set the
+editor URL, and enable anonymous identities:
+
+```toml
+project_id = "slidex-agent-local"
+
+[auth]
+site_url = "http://127.0.0.1:3181"
+enable_anonymous_sign_ins = true
+```
+
+Start the stack and print its local connection values:
+
+```bash
+npx supabase --workdir .local/supabase start
+npx supabase --workdir .local/supabase status -o env
+```
+
+Copy `API_URL` to `SUPABASE_URL` and `ANON_KEY` to `SUPABASE_ANON_KEY` in this
+repository's `.env`. Use the same values as `NEXT_PUBLIC_SUPABASE_URL` and
+`NEXT_PUBLIC_SUPABASE_ANON_KEY` in the SlideX editor's `.env.local`. A real
+server profile looks like this (the model key intentionally does not):
+
+```bash
+NODE_ENV=development
+PORT=3180
+DATA_DIR=.local/data
+CORS_ORIGIN=http://127.0.0.1:3181,http://localhost:3181
+AGENT_DRIVER=heddle
+SLIDEX_AGENT_ENABLED=true
+DEFAULT_MODEL=gpt-5.4
+SUPABASE_URL=http://127.0.0.1:54321
+SUPABASE_ANON_KEY=<ANON_KEY from supabase status>
+HEDDLE_WORKSPACE_ROOT=/absolute/path/to/SlideX
+MOTIONDOC_MCP_COMMAND=npm
+MOTIONDOC_MCP_ARGS='["run","mcp"]'
+MOTIONDOC_MCP_CWD=/absolute/path/to/SlideX
+```
+
+Start the server and editor in separate terminals:
+
+```bash
+# This repository
+npm run dev:server
+
+# SlideX editor repository
+npm run dev -- --port 3181
+```
+
+Open `http://127.0.0.1:3181/workspace/pitch/`, open Agent settings, and paste a
+valid OpenAI API key. The expected product behavior is:
+
+1. The first prompt creates or edits a deck and streams activity into the chat.
+2. A follow-up edits the same deck with the same conversation context.
+3. Refreshing the page restores chat and deck state, but the API key is gone.
+4. Supplying the key again lets a read-only question answer without changing
+   the deck.
+5. An invalid key produces a stable credential-rejected message without a raw
+   provider error; **Forget key** removes the tab-local key.
+6. **New conversation** clears chat continuity without deleting the current
+   editor deck.
+
+For a repeatable API-level proof, export `OPENAI_API_KEY` (or
+`PERSONAL_OPENAI_API_KEY`) in the shell and run:
+
+```bash
+npm run try:anonymous-byok
+npm run try:anonymous-byok -- --quality
+```
+
+The first command performs a two-turn mutation flow. `--quality` adds a new
+slide, a whole-deck restyle, and a read-only query. Both commands sign in as a
+new anonymous Supabase user, use the public REST/SSE client, hydrate the final
+session, and scan `DATA_DIR` to prove that the exact model key was not stored.
+They print IDs, counts, booleans, and short assistant previews—never the key or
+the full MotionDoc. A successful mutation flow requires an OpenAI API key with
+available Responses API quota. Provider rejection exits non-zero, but the
+failure report still includes the persisted-key match count.
+
+Stop the local stack without deleting its volumes when finished:
+
+```bash
+npx supabase --workdir .local/supabase stop
+```
+
 ## Agent Modes
 
 `AGENT_DRIVER=mock` is the default for local development. It exercises tRPC,
