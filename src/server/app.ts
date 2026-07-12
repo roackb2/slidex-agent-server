@@ -14,14 +14,21 @@ import {
   createStartAgentRunHandler,
   createSubscribeAgentRunHandler
 } from "./routes/agentRuns.js";
+import { createHttpLogger, createServerLogger } from "./observability/logger.js";
+import { createCorsOriginPolicy } from "./http/corsPolicy.js";
 
 export function createApp(deps: ServerDeps & Pick<AgentStreamDeps, "mcpManager">) {
   const app = express();
+  const logger = deps.logger ?? createServerLogger(deps.env);
 
   app.disable("x-powered-by");
+  app.use(createHttpLogger(logger));
   app.use(
     cors({
-      origin: corsOrigin(deps.env.CORS_ORIGIN),
+      origin: createCorsOriginPolicy(deps.env.CORS_ORIGIN, {
+        requireExplicitAllowlist:
+          deps.env.NODE_ENV === "production" && deps.env.SLIDEX_AGENT_ENABLED
+      }),
       credentials: false
     })
   );
@@ -48,7 +55,8 @@ export function createApp(deps: ServerDeps & Pick<AgentStreamDeps, "mcpManager">
   if (deps.env.SLIDEX_AGENT_ENABLED) {
     const agentRunService = new SlideXAgentRunService({
       env: deps.env,
-      sessionStore: deps.sessionStore
+      sessionStore: deps.sessionStore,
+      logger: logger.child({ component: "agent-run-service" })
     });
     const agentRunRouteDeps = {
       authService: deps.authService,
@@ -72,19 +80,4 @@ export function createApp(deps: ServerDeps & Pick<AgentStreamDeps, "mcpManager">
   }
 
   return app;
-}
-
-function corsOrigin(origin?: string) {
-  if (!origin || origin === "*") {
-    return true;
-  }
-
-  const allowed = origin.split(",").map((item) => item.trim());
-  return (requestOrigin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    if (!requestOrigin || allowed.includes(requestOrigin)) {
-      callback(null, true);
-      return;
-    }
-    callback(null, false);
-  };
 }

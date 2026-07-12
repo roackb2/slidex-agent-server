@@ -12,7 +12,14 @@ import { StdioMcpProcessManager } from "../mcp/stdioMcp.js";
 import { SessionStore } from "../storage/sessionStore.js";
 import type { SlideXAgentRunService } from "../agent/slidexAgentRunService.js";
 import { SlideXAgentRunServiceError } from "../agent/slidexAgentRunService.js";
-import type { AgentRunEvent, Session } from "../../shared/schema.js";
+import {
+  AgentRunEventSchema,
+  AgentSessionStateSchema,
+  StartAgentRunResultSchema,
+  type AgentRunEvent,
+  type Session,
+  type StartAgentRunInput
+} from "../../shared/schema.js";
 import {
   createCancelAgentRunHandler,
   createGetAgentSessionHandler,
@@ -23,22 +30,11 @@ import {
 } from "./agentRuns.js";
 
 test("defaults the reconnectable run API flag to disabled", () => {
-  const previous = process.env.SLIDEX_AGENT_ENABLED;
-  delete process.env.SLIDEX_AGENT_ENABLED;
-
-  try {
-    assert.equal(loadEnv().SLIDEX_AGENT_ENABLED, false);
-  } finally {
-    if (previous === undefined) {
-      delete process.env.SLIDEX_AGENT_ENABLED;
-    } else {
-      process.env.SLIDEX_AGENT_ENABLED = previous;
-    }
-  }
+  assert.equal(loadEnv({}).SLIDEX_AGENT_ENABLED, false);
 });
 
 test("keeps the reconnectable run API hidden while preserving the legacy stream when disabled", async () => {
-  await withAgentFeature(false, async (baseUrl) => {
+  await withMockAgentApp({ enabled: false }, async (baseUrl) => {
     const runResponse = await postJson(`${baseUrl}/api/agent/runs`);
     const sessionResponse = await fetch(`${baseUrl}/api/agent/sessions/session-1`);
     const legacyResponse = await postJson(`${baseUrl}/api/agent/stream`);
@@ -49,13 +45,191 @@ test("keeps the reconnectable run API hidden while preserving the legacy stream 
   });
 });
 
-test("registers the reconnectable run API when explicitly enabled", async () => {
-  await withAgentFeature(true, async (baseUrl) => {
-    const runResponse = await postJson(`${baseUrl}/api/agent/runs`);
-    const sessionResponse = await fetch(`${baseUrl}/api/agent/sessions/session-1`);
+test("enforces an exact credential-free browser CORS allowlist", async () => {
+  await withMockAgentApp({
+    enabled: true,
+    corsOrigin: "https://Editor.Example/, https://preview.example"
+  }, async (baseUrl) => {
+    const allowed = await fetch(`${baseUrl}/healthz`, {
+      headers: { origin: "https://editor.example" }
+    });
+    assert.equal(allowed.status, 200);
+    assert.equal(
+      allowed.headers.get("access-control-allow-origin"),
+      "https://editor.example"
+    );
+    assert.match(allowed.headers.get("vary") ?? "", /Origin/);
+    assert.equal(allowed.headers.get("access-control-allow-credentials"), null);
 
-    assert.equal(runResponse.status, 401);
-    assert.equal(sessionResponse.status, 401);
+    const denied = await fetch(`${baseUrl}/healthz`, {
+      headers: { origin: "https://malicious.example" }
+    });
+    assert.equal(denied.status, 200);
+    assert.equal(denied.headers.get("access-control-allow-origin"), null);
+
+    const preflight = await fetch(`${baseUrl}/api/agent/runs`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://preview.example",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "authorization,content-type"
+      }
+    });
+    assert.equal(preflight.status, 204);
+    assert.equal(
+      preflight.headers.get("access-control-allow-origin"),
+      "https://preview.example"
+    );
+    const allowedMethods = preflight.headers.get("access-control-allow-methods") ?? "";
+    const allowedHeaders = preflight.headers.get("access-control-allow-headers") ?? "";
+    assert.match(allowedMethods, /POST/);
+    assert.match(allowedHeaders, /authorization/i);
+    assert.match(allowedHeaders, /content-type/i);
+    assert.equal(preflight.headers.get("access-control-allow-credentials"), null);
+
+    const deniedPreflight = await fetch(`${baseUrl}/api/agent/runs`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://malicious.example",
+        "access-control-request-method": "POST"
+      }
+    });
+    assert.equal(deniedPreflight.headers.get("access-control-allow-origin"), null);
+  });
+});
+
+test("requires authentication on every reconnectable endpoint when enabled", async () => {
+  await withMockAgentApp({ enabled: true }, async (baseUrl) => {
+    const responses = await Promise.all([
+      postJson(`${baseUrl}/api/agent/runs`),
+      fetch(`${baseUrl}/api/agent/sessions/session-1`),
+      fetch(`${baseUrl}/api/agent/sessions/session-1`, { method: "DELETE" }),
+      fetch(`${baseUrl}/api/agent/runs/run-1/events?after=0`),
+      fetch(`${baseUrl}/api/agent/runs/run-1/cancel`, { method: "POST" })
+    ]);
+
+    for (const response of responses) {
+      assert.equal(response.status, 401);
+      assert.equal(await readErrorCode(response), "auth_required");
+    }
+  });
+});
+
+test("ignores the development auth bypass in production", async () => {
+  await withMockAgentApp({
+    enabled: true,
+    devAuthBypass: true,
+    nodeEnv: "production"
+  }, async (baseUrl) => {
+    const response = await postJson(`${baseUrl}/api/agent/runs`);
+    assert.equal(response.status, 401);
+    assert.equal(await readErrorCode(response), "auth_required");
+  });
+});
+
+test("runs a multi-turn conversation through the composed mock HTTP API", async () => {
+  await withMockAgentApp({ enabled: true, devAuthBypass: true }, async (baseUrl) => {
+    const first = await startAgentRun(baseUrl, {
+      title: "API lifecycle deck",
+      message: "Make the opening slide clearer",
+      motionDoc: "# Opening",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key"
+    });
+    const firstEvents = await subscribeAgentRun(baseUrl, first.runId);
+    const firstTerminal = firstEvents.at(-1);
+
+    assert.ok(firstEvents.some(({ kind }) => kind === "activity"));
+    assert.ok(firstTerminal?.kind === "result");
+    assert.match(firstTerminal.result.motionDoc, /Make the opening slide clearer/);
+    assert.equal(firstTerminal.result.baseSourceRevision, "revision-1");
+
+    const replay = await subscribeAgentRun(
+      baseUrl,
+      first.runId,
+      firstTerminal.sequence - 1
+    );
+    assert.deepEqual(
+      replay.map(({ kind, sequence }) => ({ kind, sequence })),
+      [{ kind: "result", sequence: firstTerminal.sequence }]
+    );
+
+    const firstState = await readAgentSession(baseUrl, first.session.id);
+    assert.equal(firstState.activeRun, null);
+    assert.equal(firstState.session.latestMotionDoc, firstTerminal.result.motionDoc);
+    assert.deepEqual(
+      firstState.session.messages.map(({ role }) => role),
+      ["user", "assistant"]
+    );
+
+    const second = await startAgentRun(baseUrl, {
+      sessionId: first.session.id,
+      message: "Make the title more concise",
+      motionDoc: firstTerminal.result.motionDoc,
+      sourceRevision: "revision-2",
+      llmApiKey: "test-api-key"
+    });
+    assert.equal(second.session.id, first.session.id);
+    const secondEvents = await subscribeAgentRun(baseUrl, second.runId);
+    const secondTerminal = secondEvents.at(-1);
+    assert.ok(secondTerminal?.kind === "result");
+    assert.match(secondTerminal.result.motionDoc, /Make the title more concise/);
+
+    const secondState = await readAgentSession(baseUrl, first.session.id);
+    assert.deepEqual(
+      secondState.session.messages.map(({ role }) => role),
+      ["user", "assistant", "user", "assistant"]
+    );
+    assert.equal(secondState.session.latestMotionDoc, secondTerminal.result.motionDoc);
+
+    const reset = await fetch(`${baseUrl}/api/agent/sessions/${first.session.id}`, {
+      method: "DELETE"
+    });
+    assert.equal(reset.status, 200);
+    assert.deepEqual(await reset.json(), { reset: true });
+
+    const missing = await fetch(`${baseUrl}/api/agent/sessions/${first.session.id}`);
+    assert.equal(missing.status, 404);
+    assert.equal(await readErrorCode(missing), "session_not_found");
+  });
+});
+
+test("rejects an overlapping turn and cancels the accepted run through HTTP", async () => {
+  await withMockAgentApp({ enabled: true, devAuthBypass: true }, async (baseUrl) => {
+    const first = await startAgentRun(baseUrl, {
+      title: "Cancellation deck",
+      message: "Start a long update",
+      motionDoc: "# Opening",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key"
+    });
+    const conflict = await requestAgentRun(baseUrl, {
+      sessionId: first.session.id,
+      message: "Overlap the active update",
+      motionDoc: "# Opening",
+      sourceRevision: "revision-2",
+      llmApiKey: "test-api-key"
+    });
+    assert.equal(conflict.status, 409);
+    assert.equal(await readErrorCode(conflict), "active_run_conflict");
+
+    const cancellation = await fetch(
+      `${baseUrl}/api/agent/runs/${first.runId}/cancel`,
+      { method: "POST" }
+    );
+    assert.equal(cancellation.status, 200);
+    assert.deepEqual(await cancellation.json(), { cancelled: true });
+
+    const events = await subscribeAgentRun(baseUrl, first.runId);
+    assert.equal(events.at(-1)?.kind, "cancelled");
+    const state = await readAgentSession(baseUrl, first.session.id);
+    assert.deepEqual(
+      state.session.messages.map(({ role, content }) => ({ role, content })),
+      [
+        { role: "user", content: "Start a long update" },
+        { role: "assistant", content: "Run cancelled." }
+      ]
+    );
   });
 });
 
@@ -255,6 +429,16 @@ async function withHttpServer(
 }
 
 function parseSseFrames(text: string) {
+  return parseSseEvents(text)
+    .map((payload) => ({
+      event: payload.kind,
+      id: String(payload.sequence),
+      kind: payload.kind,
+      sequence: payload.sequence
+    }));
+}
+
+function parseSseEvents(text: string): AgentRunEvent[] {
   return text
     .trim()
     .split("\n\n")
@@ -265,22 +449,38 @@ function parseSseFrames(text: string) {
       })
     ))
     .map(({ event, id, data }) => {
-      const payload = JSON.parse(data) as AgentRunEvent;
-      return { event, id, kind: payload.kind, sequence: payload.sequence };
+      const payload = AgentRunEventSchema.parse(JSON.parse(data));
+      assert.equal(event, payload.kind);
+      assert.equal(id, String(payload.sequence));
+      return payload;
     });
 }
 
-async function withAgentFeature(
-  enabled: boolean,
+async function withMockAgentApp(
+  options: {
+    enabled: boolean;
+    corsOrigin?: string;
+    devAuthBypass?: boolean;
+    nodeEnv?: Env["NODE_ENV"];
+  },
   run: (baseUrl: string) => Promise<void>
 ): Promise<void> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "slidex-agent-flag-"));
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "slidex-agent-app-"));
   const env: Env = {
-    NODE_ENV: "test",
+    NODE_ENV: options.nodeEnv ?? "test",
     PORT: 3000,
     AGENT_DRIVER: "mock",
-    SLIDEX_AGENT_ENABLED: enabled,
+    SLIDEX_AGENT_ENABLED: options.enabled,
     DEFAULT_MODEL: "gpt-test",
+    CORS_ORIGIN: options.corsOrigin ?? (
+      options.nodeEnv === "production" && options.enabled
+        ? "https://editor.example"
+        : undefined
+    ),
+    LOG_LEVEL: "silent",
+    SHUTDOWN_GRACE_MS: 30_000,
+    DEV_AUTH_BYPASS: options.devAuthBypass ? "1" : undefined,
+    DEV_USER_ID: "api-test-user",
     dataDir: root
   };
   const mcpManager = new StdioMcpProcessManager(env);
@@ -304,6 +504,45 @@ async function withAgentFeature(
     await mcpManager.stop();
     await fs.rm(root, { recursive: true, force: true });
   }
+}
+
+async function startAgentRun(
+  baseUrl: string,
+  input: StartAgentRunInput
+) {
+  const response = await requestAgentRun(baseUrl, input);
+  assert.equal(response.status, 202);
+  return StartAgentRunResultSchema.parse(await response.json());
+}
+
+function requestAgentRun(
+  baseUrl: string,
+  input: StartAgentRunInput
+): Promise<Response> {
+  return fetch(`${baseUrl}/api/agent/runs`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input)
+  });
+}
+
+async function subscribeAgentRun(
+  baseUrl: string,
+  runId: string,
+  afterSequence = 0
+): Promise<AgentRunEvent[]> {
+  const response = await fetch(
+    `${baseUrl}/api/agent/runs/${runId}/events?after=${afterSequence}`
+  );
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") ?? "", /^text\/event-stream/);
+  return parseSseEvents(await response.text());
+}
+
+async function readAgentSession(baseUrl: string, sessionId: string) {
+  const response = await fetch(`${baseUrl}/api/agent/sessions/${sessionId}`);
+  assert.equal(response.status, 200);
+  return AgentSessionStateSchema.parse(await response.json());
 }
 
 function postJson(url: string): Promise<Response> {

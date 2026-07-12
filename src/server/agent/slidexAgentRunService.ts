@@ -58,10 +58,21 @@ type CreateEngine = (
   }
 ) => Promise<ConversationEngine>;
 
+export type AgentRunLogger = {
+  info(fields: Record<string, unknown>, message: string): void;
+  warn(fields: Record<string, unknown>, message: string): void;
+};
+
+const NOOP_LOGGER: AgentRunLogger = {
+  info: () => undefined,
+  warn: () => undefined
+};
+
 export type SlideXAgentRunServiceOptions = {
   env: Env;
   sessionStore: SessionStore;
   createEngine?: CreateEngine;
+  logger?: AgentRunLogger;
 };
 
 export class SlideXAgentRunServiceError extends Error {
@@ -90,15 +101,25 @@ export class SlideXAgentRunService {
   private readonly cancelledRunIds = new Set<string>();
   private readonly resetAddresses = new Set<string>();
   private readonly createEngine: CreateEngine;
+  private readonly logger: AgentRunLogger;
 
   constructor(private readonly options: SlideXAgentRunServiceOptions) {
+    this.logger = options.logger ?? NOOP_LOGGER;
     this.createEngine = options.createEngine
       ?? (options.env.AGENT_DRIVER === "mock"
         ? createMockConversationEngine
         : createSlideXConversationEngine);
   }
 
-  async start(user: AuthUser, input: StartAgentRunInput) {
+  async start(
+    user: AuthUser,
+    input: StartAgentRunInput,
+    observability: { correlationId?: string } = {}
+  ) {
+    const startedAt = Date.now();
+    const correlation = observability.correlationId
+      ? { correlationId: observability.correlationId }
+      : {};
     const session = await this.resolveProductSession(user.id, input);
     const address = { userId: user.id, sessionId: session.id };
     if (this.runs.isRunning(address)) {
@@ -130,7 +151,17 @@ export class SlideXAgentRunService {
       }
     });
 
-    const acceptedSession = this.persistAcceptedMessage(session, input, run.runId);
+    const acceptedSession = this.persistAcceptedMessage(session, input, run.runId)
+      .then((persistedSession) => {
+        this.logger.info({
+          event: "agent_run.accepted",
+          runId: run.runId,
+          sessionId: session.id,
+          model,
+          ...correlation
+        }, "Agent run accepted");
+        return persistedSession;
+      });
     const key = addressKey(address);
     const result = run.result
       .then(async (turnResult) => {
@@ -158,19 +189,45 @@ export class SlideXAgentRunService {
             }
           })
         );
+        const persistedSession = await this.options.sessionStore.writeSession(currentSession);
+        this.logger.info({
+          event: "agent_run.terminal",
+          runId: run.runId,
+          sessionId: session.id,
+          model,
+          outcome: turnResult.outcome,
+          durationMs: Date.now() - startedAt,
+          toolCallCount: turnResult.toolResults.length,
+          ...correlation
+        }, "Agent run completed");
         return {
-          session: await this.options.sessionStore.writeSession(currentSession),
+          session: persistedSession,
           motionDoc,
           assistantMessage: turnResult.summary,
           baseSourceRevision: input.sourceRevision
         };
       })
       .catch(async (error: unknown) => {
+        const cancelled = this.cancelledRunIds.has(run.runId);
         await this.persistTerminalFailure({
           acceptedSession,
           addressKey: key,
           runId: run.runId
         });
+        const fields = {
+          event: "agent_run.terminal",
+          runId: run.runId,
+          sessionId: session.id,
+          model,
+          outcome: cancelled ? "cancelled" : "error",
+          durationMs: Date.now() - startedAt,
+          ...correlation
+        };
+        if (cancelled) {
+          this.logger.info(fields, "Agent run cancelled");
+        } else {
+          this.logger.warn(fields, "Agent run failed");
+        }
         throw error;
       });
     result.catch(() => undefined);
@@ -179,11 +236,12 @@ export class SlideXAgentRunService {
     this.expireContext(run.runId, key, result);
 
     try {
+      const persistedSession = await acceptedSession;
       return {
         accepted: true as const,
         runId: run.runId,
         acceptedAt: run.acceptedAt,
-        session: await acceptedSession
+        session: persistedSession
       };
     } catch (error) {
       run.cancel();
@@ -245,6 +303,11 @@ export class SlideXAgentRunService {
 
     try {
       await this.options.sessionStore.deleteSession(userId, sessionId);
+      this.logger.info({
+        event: "agent_session.reset",
+        sessionId,
+        cancelledRunId: activeRun?.runId
+      }, "Agent conversation reset");
       return { reset: true };
     } catch (error) {
       this.resetAddresses.delete(key);
@@ -277,7 +340,11 @@ export class SlideXAgentRunService {
           };
         } catch (error) {
           if (!(error instanceof SlideXAgentSessionResetError)) {
-            console.error(`[agent-runs] Failed to finalize ${event.runId}`, error);
+            this.logger.warn({
+              event: "agent_run.finalization_failed",
+              runId: event.runId,
+              sessionId: context.address.sessionId
+            }, "Agent run finalization failed");
           }
           yield {
             kind: "error",
@@ -309,9 +376,15 @@ export class SlideXAgentRunService {
   }
 
   cancel(userId: string, runId: string): boolean {
-    const cancelled = this.requireOwnedRun(userId, runId).run.cancel();
+    const context = this.requireOwnedRun(userId, runId);
+    const cancelled = context.run.cancel();
     if (cancelled) {
       this.cancelledRunIds.add(runId);
+      this.logger.info({
+        event: "agent_run.cancel_requested",
+        runId,
+        sessionId: context.address.sessionId
+      }, "Agent run cancellation requested");
     }
     return cancelled;
   }
