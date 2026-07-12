@@ -43,8 +43,10 @@ MotionDoc updates without calling an LLM. Mock and real modes use the same
 `npm test` includes a deterministic full-application regression that enables
 the reconnectable API with the non-production auth bypass, then exercises
 start, canonical SSE activity/result delivery, cursor-bounded replay, history
-hydration, a second turn, and conversation reset through real HTTP routes. The
-same test, typecheck, and build run in
+hydration, a second turn, overlap conflict, cancellation, and conversation
+reset through real HTTP routes. The suite also asserts that every run/session
+operation requires authentication and that production ignores the development
+auth bypass. The same test, typecheck, and build run in
 `.github/workflows/agent-regression.yml`. Keep product lifecycle assertions in
 this composed test and use handler stubs only for isolated transport errors.
 

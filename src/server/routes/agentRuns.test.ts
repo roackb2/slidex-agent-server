@@ -56,13 +56,32 @@ test("keeps the reconnectable run API hidden while preserving the legacy stream 
   });
 });
 
-test("registers the reconnectable run API when explicitly enabled", async () => {
+test("requires authentication on every reconnectable endpoint when enabled", async () => {
   await withMockAgentApp({ enabled: true }, async (baseUrl) => {
-    const runResponse = await postJson(`${baseUrl}/api/agent/runs`);
-    const sessionResponse = await fetch(`${baseUrl}/api/agent/sessions/session-1`);
+    const responses = await Promise.all([
+      postJson(`${baseUrl}/api/agent/runs`),
+      fetch(`${baseUrl}/api/agent/sessions/session-1`),
+      fetch(`${baseUrl}/api/agent/sessions/session-1`, { method: "DELETE" }),
+      fetch(`${baseUrl}/api/agent/runs/run-1/events?after=0`),
+      fetch(`${baseUrl}/api/agent/runs/run-1/cancel`, { method: "POST" })
+    ]);
 
-    assert.equal(runResponse.status, 401);
-    assert.equal(sessionResponse.status, 401);
+    for (const response of responses) {
+      assert.equal(response.status, 401);
+      assert.equal(await readErrorCode(response), "auth_required");
+    }
+  });
+});
+
+test("ignores the development auth bypass in production", async () => {
+  await withMockAgentApp({
+    enabled: true,
+    devAuthBypass: true,
+    nodeEnv: "production"
+  }, async (baseUrl) => {
+    const response = await postJson(`${baseUrl}/api/agent/runs`);
+    assert.equal(response.status, 401);
+    assert.equal(await readErrorCode(response), "auth_required");
   });
 });
 
@@ -130,6 +149,45 @@ test("runs a multi-turn conversation through the composed mock HTTP API", async 
     const missing = await fetch(`${baseUrl}/api/agent/sessions/${first.session.id}`);
     assert.equal(missing.status, 404);
     assert.equal(await readErrorCode(missing), "session_not_found");
+  });
+});
+
+test("rejects an overlapping turn and cancels the accepted run through HTTP", async () => {
+  await withMockAgentApp({ enabled: true, devAuthBypass: true }, async (baseUrl) => {
+    const first = await startAgentRun(baseUrl, {
+      title: "Cancellation deck",
+      message: "Start a long update",
+      motionDoc: "# Opening",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key"
+    });
+    const conflict = await requestAgentRun(baseUrl, {
+      sessionId: first.session.id,
+      message: "Overlap the active update",
+      motionDoc: "# Opening",
+      sourceRevision: "revision-2",
+      llmApiKey: "test-api-key"
+    });
+    assert.equal(conflict.status, 409);
+    assert.equal(await readErrorCode(conflict), "active_run_conflict");
+
+    const cancellation = await fetch(
+      `${baseUrl}/api/agent/runs/${first.runId}/cancel`,
+      { method: "POST" }
+    );
+    assert.equal(cancellation.status, 200);
+    assert.deepEqual(await cancellation.json(), { cancelled: true });
+
+    const events = await subscribeAgentRun(baseUrl, first.runId);
+    assert.equal(events.at(-1)?.kind, "cancelled");
+    const state = await readAgentSession(baseUrl, first.session.id);
+    assert.deepEqual(
+      state.session.messages.map(({ role, content }) => ({ role, content })),
+      [
+        { role: "user", content: "Start a long update" },
+        { role: "assistant", content: "Run cancelled." }
+      ]
+    );
   });
 });
 
@@ -357,12 +415,16 @@ function parseSseEvents(text: string): AgentRunEvent[] {
 }
 
 async function withMockAgentApp(
-  options: { enabled: boolean; devAuthBypass?: boolean },
+  options: {
+    enabled: boolean;
+    devAuthBypass?: boolean;
+    nodeEnv?: Env["NODE_ENV"];
+  },
   run: (baseUrl: string) => Promise<void>
 ): Promise<void> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "slidex-agent-app-"));
   const env: Env = {
-    NODE_ENV: "test",
+    NODE_ENV: options.nodeEnv ?? "test",
     PORT: 3000,
     AGENT_DRIVER: "mock",
     SLIDEX_AGENT_ENABLED: options.enabled,
@@ -398,13 +460,20 @@ async function startAgentRun(
   baseUrl: string,
   input: StartAgentRunInput
 ) {
-  const response = await fetch(`${baseUrl}/api/agent/runs`, {
+  const response = await requestAgentRun(baseUrl, input);
+  assert.equal(response.status, 202);
+  return StartAgentRunResultSchema.parse(await response.json());
+}
+
+function requestAgentRun(
+  baseUrl: string,
+  input: StartAgentRunInput
+): Promise<Response> {
+  return fetch(`${baseUrl}/api/agent/runs`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(input)
   });
-  assert.equal(response.status, 202);
-  return StartAgentRunResultSchema.parse(await response.json());
 }
 
 async function subscribeAgentRun(
