@@ -1,5 +1,6 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
 import type { Request, Response } from "express";
+import type { Logger } from "pino";
 import type { AuthService, AuthUser } from "./auth.js";
 import type { Env } from "./env.js";
 import type { SessionStore } from "./storage/sessionStore.js";
@@ -8,6 +9,7 @@ export type ServerDeps = {
   env: Env;
   authService: AuthService;
   sessionStore: SessionStore;
+  logger?: Logger;
 };
 
 export type AppContext = {

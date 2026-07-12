@@ -89,6 +89,17 @@ The server never stores the user's LLM API key. It is accepted only in the strea
 
 Heddle's `stateRoot` is created per user/session under `DATA_DIR/heddle`, so its local state also lands on the Railway volume.
 
+## Observability
+
+HTTP requests emit structured Pino completion logs and return a generated
+`X-Request-ID`. Accepted and terminal agent lifecycle records use `runId` as
+the durable support correlation key and include only session ID, model,
+outcome, duration, and tool-call count. Request serializers omit headers and
+bodies, and defense-in-depth redaction covers bearer credentials, cookies, and
+`llmApiKey`. Prompts, MotionDoc source, user identity, and raw provider errors
+must not be logged. Set `LOG_LEVEL` to `fatal`, `error`, `warn`, `info`,
+`debug`, `trace`, or `silent`; production defaults to `info`.
+
 ## Railway
 
 Railway deploys from `railway.json` and `Dockerfile`.
@@ -103,6 +114,7 @@ SUPABASE_ANON_KEY=...
 VITE_SUPABASE_URL=...
 VITE_SUPABASE_ANON_KEY=...
 DEFAULT_MODEL=gpt-4.1
+LOG_LEVEL=info
 HEDDLE_WORKSPACE_ROOT=/app
 MOTIONDOC_MCP_COMMAND=...
 MOTIONDOC_MCP_ARGS=...

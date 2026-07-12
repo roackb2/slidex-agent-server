@@ -12,7 +12,7 @@
     "dev:web": "vite --host 0.0.0.0",
     "build": "tsc -p tsconfig.server.json && vite build",
     "start": "node dist/server/index.js",
-    "test": "tsx --test src/server/agent/*.test.ts src/server/routes/*.test.ts",
+    "test": "tsx --test src/server/agent/*.test.ts src/server/observability/*.test.ts src/server/routes/*.test.ts",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "try:agent": "tsx scripts/trySlidexAgent.ts"
   },
@@ -27,6 +27,8 @@
     "express": "^4.19.2",
     "lucide-react": "^0.468.0",
     "nanoid": "^5.0.7",
+    "pino": "10.3.1",
+    "pino-http": "11.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "superjson": "^2.2.1",

@@ -429,6 +429,7 @@ async function withMockAgentApp(
     AGENT_DRIVER: "mock",
     SLIDEX_AGENT_ENABLED: options.enabled,
     DEFAULT_MODEL: "gpt-test",
+    LOG_LEVEL: "silent",
     DEV_AUTH_BYPASS: options.devAuthBypass ? "1" : undefined,
     DEV_USER_ID: "api-test-user",
     dataDir: root
