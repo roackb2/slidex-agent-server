@@ -13,6 +13,7 @@ import { SessionStore } from "../storage/sessionStore.js";
 import type { SlideXAgentRunService } from "../agent/slidexAgentRunService.js";
 import { SlideXAgentRunServiceError } from "../agent/slidexAgentRunService.js";
 import {
+  AgentSessionPageSchema,
   AgentRunEventSchema,
   AgentSessionStateSchema,
   StartAgentRunResultSchema,
@@ -21,6 +22,7 @@ import {
   type StartAgentRunInput
 } from "../../shared/schema.js";
 import {
+  createAttachAgentSessionHandler,
   createCancelAgentRunHandler,
   createGetAgentSessionHandler,
   createResetAgentSessionHandler,
@@ -36,10 +38,12 @@ test("defaults the reconnectable run API flag to disabled", () => {
 test("keeps the reconnectable run API hidden while preserving the legacy stream when disabled", async () => {
   await withMockAgentApp({ enabled: false }, async (baseUrl) => {
     const runResponse = await postJson(`${baseUrl}/api/agent/runs`);
+    const sessionsResponse = await fetch(`${baseUrl}/api/agent/sessions`);
     const sessionResponse = await fetch(`${baseUrl}/api/agent/sessions/session-1`);
     const legacyResponse = await postJson(`${baseUrl}/api/agent/stream`);
 
     assert.equal(runResponse.status, 404);
+    assert.equal(sessionsResponse.status, 404);
     assert.equal(sessionResponse.status, 404);
     assert.equal(legacyResponse.status, 401);
   });
@@ -102,7 +106,16 @@ test("requires authentication on every reconnectable endpoint when enabled", asy
   await withMockAgentApp({ enabled: true }, async (baseUrl) => {
     const responses = await Promise.all([
       postJson(`${baseUrl}/api/agent/runs`),
+      fetch(`${baseUrl}/api/agent/sessions`),
       fetch(`${baseUrl}/api/agent/sessions/session-1`),
+      fetch(`${baseUrl}/api/agent/sessions/session-1/presentation`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          presentationId: "presentation-1",
+          presentationTitle: "Deck"
+        })
+      }),
       fetch(`${baseUrl}/api/agent/sessions/session-1`, { method: "DELETE" }),
       fetch(`${baseUrl}/api/agent/runs/run-1/events?after=0`),
       fetch(`${baseUrl}/api/agent/runs/run-1/cancel`, { method: "POST" })
@@ -191,6 +204,82 @@ test("runs a multi-turn conversation through the composed mock HTTP API", async 
     const missing = await fetch(`${baseUrl}/api/agent/sessions/${first.session.id}`);
     assert.equal(missing.status, 404);
     assert.equal(await readErrorCode(missing), "session_not_found");
+  });
+});
+
+test("lists a bounded presentation-aware catalog with stable cursor pagination", async () => {
+  await withMockAgentApp({ enabled: true, devAuthBypass: true }, async (baseUrl) => {
+    const first = await startAgentRun(baseUrl, {
+      message: "Create the first conversation",
+      motionDoc: "# First",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key",
+      presentationId: "presentation-1",
+      presentationTitle: "First deck"
+    });
+    await subscribeAgentRun(baseUrl, first.runId);
+
+    const second = await startAgentRun(baseUrl, {
+      message: "Create the second conversation",
+      motionDoc: "# Second",
+      sourceRevision: "revision-2",
+      llmApiKey: "test-api-key",
+      presentationId: "presentation-2",
+      presentationTitle: "Second deck"
+    });
+    await subscribeAgentRun(baseUrl, second.runId);
+
+    const firstPageResponse = await fetch(`${baseUrl}/api/agent/sessions?limit=1`);
+    assert.equal(firstPageResponse.status, 200);
+    const firstPage = AgentSessionPageSchema.parse(await firstPageResponse.json());
+    assert.equal(firstPage.items.length, 1);
+    assert.equal(firstPage.items[0]?.id, second.session.id);
+    assert.deepEqual(firstPage.items[0]?.presentation, {
+      id: "presentation-2",
+      title: "Second deck"
+    });
+    assert.equal(firstPage.items[0]?.messageCount, 2);
+    assert.ok(firstPage.nextCursor);
+    assert.equal("userId" in (firstPage.items[0] ?? {}), false);
+    assert.equal("latestMotionDoc" in (firstPage.items[0] ?? {}), false);
+
+    const secondPageResponse = await fetch(
+      `${baseUrl}/api/agent/sessions?limit=1&cursor=${encodeURIComponent(firstPage.nextCursor ?? "")}`
+    );
+    assert.equal(secondPageResponse.status, 200);
+    const secondPage = AgentSessionPageSchema.parse(await secondPageResponse.json());
+    assert.deepEqual(secondPage.items.map(({ id }) => id), [first.session.id]);
+    assert.equal(secondPage.nextCursor, undefined);
+
+    const malformed = await fetch(`${baseUrl}/api/agent/sessions?cursor=not-a-cursor`);
+    assert.equal(malformed.status, 400);
+    assert.equal(await readErrorCode(malformed), "invalid_request");
+  });
+});
+
+test("refuses to rebind a conversation to another presentation", async () => {
+  await withMockAgentApp({ enabled: true, devAuthBypass: true }, async (baseUrl) => {
+    const first = await startAgentRun(baseUrl, {
+      message: "Create a bound conversation",
+      motionDoc: "# First",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key",
+      presentationId: "presentation-1",
+      presentationTitle: "First deck"
+    });
+    await subscribeAgentRun(baseUrl, first.runId);
+
+    const response = await requestAgentRun(baseUrl, {
+      sessionId: first.session.id,
+      message: "Try another deck",
+      motionDoc: "# Second",
+      sourceRevision: "revision-2",
+      llmApiKey: "test-api-key",
+      presentationId: "presentation-2",
+      presentationTitle: "Second deck"
+    });
+    assert.equal(response.status, 400);
+    assert.equal(await readErrorCode(response), "invalid_request");
   });
 });
 
@@ -320,6 +409,44 @@ test("reads and resets authenticated conversation state", async () => {
   });
 });
 
+test("attaches a legacy conversation to one presentation", async () => {
+  const session = createSession();
+  let attached:
+    | { userId: string; sessionId: string; presentationId: string; presentationTitle: string }
+    | undefined;
+  const app = createRouteApp({
+    attachSessionToPresentation: async (userId, sessionId, input) => {
+      attached = { userId, sessionId, ...input };
+      return {
+        ...session,
+        presentationId: input.presentationId,
+        presentationTitle: input.presentationTitle
+      };
+    }
+  });
+
+  await withHttpServer(app, async (baseUrl) => {
+    const response = await fetch(
+      `${baseUrl}/api/agent/sessions/session-1/presentation`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          presentationId: "presentation-1",
+          presentationTitle: "Deck"
+        })
+      }
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual(attached, {
+      userId: "user-1",
+      sessionId: "session-1",
+      presentationId: "presentation-1",
+      presentationTitle: "Deck"
+    });
+  });
+});
+
 test("returns stable 404, 409, 400, and sanitized 500 errors", async () => {
   const app = createRouteApp({
     getSessionState: async () => {
@@ -348,6 +475,8 @@ test("returns stable 404, 409, 400, and sanitized 500 errors", async () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         sessionId: "session-1",
+        presentationId: "presentation-1",
+        presentationTitle: "Test deck",
         message: "Update it",
         motionDoc: "# Deck",
         sourceRevision: "revision-1",
@@ -395,6 +524,10 @@ function createRouteApp(service: Partial<SlideXAgentRunService>) {
   app.get("/api/agent/runs/:runId/events", createSubscribeAgentRunHandler(deps));
   app.post("/api/agent/runs/:runId/cancel", createCancelAgentRunHandler(deps));
   app.get("/api/agent/sessions/:sessionId", createGetAgentSessionHandler(deps));
+  app.put(
+    "/api/agent/sessions/:sessionId/presentation",
+    createAttachAgentSessionHandler(deps)
+  );
   app.delete("/api/agent/sessions/:sessionId", createResetAgentSessionHandler(deps));
   return app;
 }
@@ -508,7 +641,7 @@ async function withMockAgentApp(
 
 async function startAgentRun(
   baseUrl: string,
-  input: StartAgentRunInput
+  input: AgentRunTestInput
 ) {
   const response = await requestAgentRun(baseUrl, input);
   assert.equal(response.status, 202);
@@ -517,14 +650,23 @@ async function startAgentRun(
 
 function requestAgentRun(
   baseUrl: string,
-  input: StartAgentRunInput
+  input: AgentRunTestInput
 ): Promise<Response> {
   return fetch(`${baseUrl}/api/agent/runs`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(input)
+    body: JSON.stringify({
+      presentationId: "presentation-1",
+      presentationTitle: "Test deck",
+      ...input
+    } satisfies StartAgentRunInput)
   });
 }
+
+type AgentRunTestInput = Omit<
+  StartAgentRunInput,
+  "presentationId" | "presentationTitle"
+> & Partial<Pick<StartAgentRunInput, "presentationId" | "presentationTitle">>;
 
 async function subscribeAgentRun(
   baseUrl: string,
