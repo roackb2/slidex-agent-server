@@ -84,7 +84,7 @@ export async function createMockConversationEngine(
           summary: result.assistantMessage || streamedText.trim(),
           session: {} as ConversationTurnResultSummary["session"],
           artifacts: [],
-          toolResults: []
+          toolResults: [createMockValidationToolResult(result.motionDoc)]
         } satisfies ConversationTurnResultSummary;
       }
     },
@@ -95,6 +95,30 @@ export async function createMockConversationEngine(
         : undefined
     }
   } as unknown as ConversationEngine;
+}
+
+function createMockValidationToolResult(
+  motionDoc: string
+): ConversationTurnResultSummary["toolResults"][number] {
+  return {
+    call: {
+      id: "mock-validate-final-motiondoc",
+      tool: "slidex_validate_motion_doc",
+      input: { source: motionDoc }
+    },
+    result: {
+      ok: true,
+      output: {
+        isError: false,
+        structuredContent: {
+          result: { isValid: true, issues: [] }
+        }
+      }
+    },
+    durationMs: 0,
+    step: 1,
+    timestamp: new Date().toISOString()
+  };
 }
 
 function toConversationActivity(

@@ -7,8 +7,9 @@ This directory owns the SlideX-specific orchestration around the Heddle SDK.
   the same engine/run-service path. Mock mode changes execution only; it must
   still exercise Heddle run identity, replay, cancellation, product history,
   and the production HTTP/SSE contracts.
-- `slidexHeddleAgent.ts` owns SlideX prompts, MotionDoc artifact resolution, and
-  the SlideX tool-approval policy.
+- `slidexHeddleAgent.ts` owns SlideX prompts, MotionDoc artifact resolution,
+  final-source validation, the concise/source-free assistant-message contract,
+  and the SlideX tool-approval policy.
 - `slidexAgentRunService.ts` coordinates durable SlideX sessions around
   `ConversationRunService` from `@roackb2/heddle/hosted`. Heddle remains
   responsible for execution, cancellation, ordered activity events, and replay;
@@ -41,8 +42,19 @@ credential. The service passes it directly into the request-scoped engine and
 retains only non-secret lifecycle fields. The key must never enter product
 sessions, run results/events, Heddle traces or artifacts, logs, or error
 messages. Heddle's safe `result.failure` category is the source of truth for
-credential rejection; do not parse provider strings or add another HTTP-status
-classifier here.
+model failures; do not parse provider strings or add another HTTP-status
+classifier here. Heddle `authentication` becomes `model_credential_rejected`;
+Heddle `quota` becomes `model_quota_exhausted`. The latter remains a general
+actionable run error so the editor does not refocus the key field as though a
+valid but exhausted key were malformed.
+
+Successful result projection is also a product boundary. A changed MotionDoc is
+accepted only when the turn includes a successful `slidex_validate_motion_doc`
+result for that exact final source. The same projected assistant message is
+persisted and returned: source-like model output is replaced wholesale, never
+partially scrubbed, and source-free copy is capped for the narrow agent panel.
+Raw `assistant.stream` text is withheld from product activity events until this
+terminal projection has run; status and tool activity remain visible.
 The route layer maps the service's stable product errors to HTTP status codes
 and sanitizes unknown failures. Structured lifecycle logs contain only stable
 correlation, outcome, and safe product error-code facts; prompts, MotionDoc

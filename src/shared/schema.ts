@@ -107,7 +107,10 @@ export const PublicConversationActivitySchema = z
     result: z.object({
       ok: z.boolean().optional()
     }).optional()
-  });
+  })
+  .transform((activity) => activity.type === "assistant.stream"
+    ? { type: activity.type }
+    : activity);
 
 export const SlideXRunResultSchema = z.object({
   session: SessionSchema,

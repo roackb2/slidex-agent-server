@@ -1,5 +1,6 @@
 import type {
   ConversationEngine,
+  ModelRunFailureCode,
   SubmitConversationTurnResult
 } from "@roackb2/heddle";
 import {
@@ -24,8 +25,9 @@ import { createMockConversationEngine } from "./mockConversationEngine.js";
 import {
   buildPrompt,
   createSlideXApprovalHost,
+  projectSlideXTurnResult,
   resolveConversationSession,
-  resolveMotionDoc
+  SlideXDeckValidationError
 } from "./slidexHeddleAgent.js";
 
 type SlideXRunAddress = {
@@ -58,6 +60,7 @@ type SlideXRunLifecycleContext = {
 class SlideXAgentSessionResetError extends Error {}
 class SlideXAgentResultFinalizationError extends Error {}
 class SlideXAgentModelCredentialError extends Error {}
+class SlideXAgentModelQuotaError extends Error {}
 
 type CreateEngine = (
   env: Env,
@@ -86,6 +89,16 @@ const MODEL_CREDENTIAL_REJECTED = {
   message: "OpenAI rejected this API key. Check the key and try again."
 } as const;
 
+const MODEL_QUOTA_EXHAUSTED = {
+  code: "model_quota_exhausted",
+  message: "This OpenAI API key is valid, but it has no available quota. Check the account billing or use a different key, then try again."
+} as const;
+
+const DECK_VALIDATION_FAILED = {
+  code: "deck_validation_failed",
+  message: "The agent produced a deck that did not pass validation, so it was not applied. Try again."
+} as const;
+
 const RUN_FAILED = {
   code: "run_failed",
   message: "The agent could not complete this request. Try again."
@@ -98,8 +111,18 @@ const FINALIZATION_FAILED = {
 
 type SlideXRunPublicError =
   | typeof MODEL_CREDENTIAL_REJECTED
+  | typeof MODEL_QUOTA_EXHAUSTED
+  | typeof DECK_VALIDATION_FAILED
   | typeof RUN_FAILED
   | typeof FINALIZATION_FAILED;
+
+const MODEL_FAILURE_ERROR_BY_CODE = new Map<
+  ModelRunFailureCode,
+  new () => Error
+>([
+  ["authentication", SlideXAgentModelCredentialError],
+  ["quota", SlideXAgentModelQuotaError]
+]);
 
 export type SlideXAgentRunServiceOptions = {
   env: Env;
@@ -368,27 +391,30 @@ export class SlideXAgentRunService {
     if (this.resetAddresses.has(lifecycle.addressKey)) {
       throw new SlideXAgentSessionResetError();
     }
-    if (turnResult.failure?.source === "model"
-      && turnResult.failure.code === "authentication") {
-      throw new SlideXAgentModelCredentialError();
+    if (turnResult.failure?.source === "model") {
+      const ModelFailureError = MODEL_FAILURE_ERROR_BY_CODE.get(turnResult.failure.code);
+      if (ModelFailureError) {
+        throw new ModelFailureError();
+      }
     }
-    if (turnResult.outcome === "error") {
+    if (turnResult.failure || turnResult.outcome === "error") {
       throw new Error("Agent run returned an error outcome");
     }
 
     try {
       const currentSession = await this.requireAcceptedSession(lifecycle);
-      const motionDoc = resolveMotionDoc(
-        lifecycle.engine,
-        lifecycle.conversationId,
-        lifecycle.previousArtifactId,
-        lifecycle.initialMotionDoc
-      );
+      const { motionDoc, assistantMessage } = projectSlideXTurnResult({
+        engine: lifecycle.engine,
+        sessionId: lifecycle.conversationId,
+        previousArtifactId: lifecycle.previousArtifactId,
+        initialMotionDoc: lifecycle.initialMotionDoc,
+        result: turnResult
+      });
       currentSession.latestMotionDoc = motionDoc;
       currentSession.messages.push(
         makeMessage({
           role: "assistant",
-          content: turnResult.summary,
+          content: assistantMessage,
           metadata: {
             outcome: turnResult.outcome,
             runId: runContext.runId,
@@ -410,10 +436,13 @@ export class SlideXAgentRunService {
       return {
         session: persistedSession,
         motionDoc,
-        assistantMessage: turnResult.summary,
+        assistantMessage,
         baseSourceRevision: lifecycle.sourceRevision
       };
-    } catch {
+    } catch (error) {
+      if (error instanceof SlideXDeckValidationError) {
+        throw error;
+      }
       throw new SlideXAgentResultFinalizationError();
     }
   }
@@ -454,6 +483,12 @@ export class SlideXAgentRunService {
   private projectRunError(error: unknown): SlideXRunPublicError {
     if (error instanceof SlideXAgentModelCredentialError) {
       return MODEL_CREDENTIAL_REJECTED;
+    }
+    if (error instanceof SlideXAgentModelQuotaError) {
+      return MODEL_QUOTA_EXHAUSTED;
+    }
+    if (error instanceof SlideXDeckValidationError) {
+      return DECK_VALIDATION_FAILED;
     }
     return error instanceof SlideXAgentResultFinalizationError
       ? FINALIZATION_FAILED

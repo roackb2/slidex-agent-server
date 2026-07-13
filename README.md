@@ -209,7 +209,14 @@ run-start request body, passed into
 run, and omitted from product sessions, run events/results, Heddle
 traces/artifacts, and logs. A rejected key becomes the stable
 `model_credential_rejected` run terminal without exposing the provider's raw
-error.
+error. A valid key without usable quota becomes the distinct
+`model_quota_exhausted` terminal with billing-or-key recovery guidance; it is
+not presented as a malformed credential.
+
+Successful chat terminals use a SlideX-owned result projection. Changed decks
+must include a passing validation result for the exact final MotionDoc, and the
+visible assistant message is source-free and capped at 240 characters. Raw
+model-authored assistant streams are not exposed before this terminal boundary.
 
 Heddle's `stateRoot` is created per user/session under `DATA_DIR/heddle`, so its local state also lands on the Railway volume.
 

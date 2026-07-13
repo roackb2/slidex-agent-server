@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ConversationTurnResultSummary } from "@roackb2/heddle";
+import { HeddleEventType } from "@roackb2/heddle";
+import type {
+  ConversationActivity,
+  ConversationTurnResultSummary
+} from "@roackb2/heddle";
 import type { AgentProgressEvent } from "./types.js";
 import {
   runSlideXAgent,
@@ -69,6 +73,35 @@ test("preserves the existing MotionDoc when the turn creates no artifact", async
   });
 
   assert.equal(result.motionDoc, "# Existing deck");
+});
+
+test("withholds raw assistant streaming and projects the terminal summary once", async () => {
+  const rawSummary = "Final MotionDoc source:\n```mdx\n<Slide>secret</Slide>\n```";
+  const events: AgentProgressEvent[] = [];
+  const harness = createEngineHarness({
+    nextArtifactId: "artifact-motiondoc",
+    artifactContent: "# Updated deck",
+    assistantStreamText: rawSummary,
+    turnResult: {
+      ...createTurnResult(),
+      summary: rawSummary
+    }
+  });
+
+  const result = await runSlideXAgent({
+    engine: harness.engine,
+    sessionId: "slidex-session",
+    motionDoc: "# Original deck",
+    message: "Update the deck",
+    model: "gpt-5.4",
+    signal: new AbortController().signal,
+    emit: (event) => {
+      events.push(event);
+    }
+  });
+
+  assert.equal(result.assistantMessage, "Updated the deck. Validation passed.");
+  assert.equal(events.some((event) => event.type === "token"), false);
 });
 
 test("fails when Heddle reports a current artifact that cannot be read", async () => {
@@ -156,6 +189,8 @@ function createEngineHarness(options: {
   nextArtifactId?: string;
   artifactContent?: string;
   unreadableArtifact?: boolean;
+  assistantStreamText?: string;
+  turnResult?: ConversationTurnResultSummary;
 } = {}): {
   engine: ConversationEngineLike;
   createdSessionIds: string[];
@@ -199,7 +234,18 @@ function createEngineHarness(options: {
         submit: async (input) => {
           submissions.push({ sessionId: input.sessionId, prompt: input.prompt });
           currentArtifactId = options.nextArtifactId ?? currentArtifactId;
-          return createTurnResult();
+          if (options.assistantStreamText) {
+            input.host?.events?.onActivity?.({
+              source: "agent-loop",
+              type: HeddleEventType.assistantStream,
+              runId: "test-run",
+              step: 1,
+              text: options.assistantStreamText,
+              done: false,
+              timestamp: "2026-07-11T00:00:00.000Z"
+            } satisfies ConversationActivity);
+          }
+          return options.turnResult ?? createTurnResult();
         }
       },
       artifacts: {
@@ -225,6 +271,24 @@ function createTurnResult(): ConversationTurnResultSummary {
     summary: "Updated the deck",
     session: {} as ConversationTurnResultSummary["session"],
     artifacts: [],
-    toolResults: []
+    toolResults: [{
+      call: {
+        id: "validate-final-motiondoc",
+        tool: "slidex_validate_motion_doc",
+        input: { source: "# Updated deck" }
+      },
+      result: {
+        ok: true,
+        output: {
+          isError: false,
+          structuredContent: {
+            result: { isValid: true, issues: [] }
+          }
+        }
+      },
+      durationMs: 1,
+      step: 1,
+      timestamp: "2026-07-11T00:00:00.000Z"
+    }]
   };
 }

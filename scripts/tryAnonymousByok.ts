@@ -22,6 +22,7 @@ import {
   type StartAgentRunInput,
   type StartAgentRunResult
 } from "../src/shared/schema.js";
+import { SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS } from "../src/server/agent/slidexHeddleAgent.js";
 
 const STARTER_MOTION_DOC = `<Slide duration={5} theme="light" background="#ffffff" accent="#2563eb" textColor="#0f172a">
   <Text x={10} y={28} width={80} fontSize={72} fontWeight={700}>A clear opening</Text>
@@ -103,8 +104,14 @@ async function main(): Promise<void> {
   const hydrated = await getSessionState(config.serverUrl, authorization, sessionId);
   const leakedPaths = await findFilesContaining(config.dataDir, config.llmApiKey);
   const assistantMessages = hydrated.session.messages.filter(({ role }) => role === "assistant");
-  const summaryLeaksSource = assistantMessages.some(({ content }) =>
-    /```|~~~|<Slide\b|Final MotionDoc source/i.test(content)
+  const summaryLeaksSource = assistantMessages.some(({ content }) => (
+    /```|~~~/.test(content)
+    || /<\s*\/?\s*[A-Z][A-Za-z0-9.:-]*\b/.test(content)
+    || /(?:Final|Current)\s+MotionDoc\s+source/i.test(content)
+  ));
+  const longestAssistantMessage = Math.max(
+    0,
+    ...assistantMessages.map(({ content }) => content.length)
   );
 
   requireCondition(hydrated.activeRun === null, "Hydrated session still reports an active run");
@@ -118,6 +125,14 @@ async function main(): Promise<void> {
   );
   requireCondition(leakedPaths.length === 0, "The model key was found in server-owned local state");
   requireCondition(countSlides(motionDoc) >= 5, "The final deck contains fewer than five slides");
+  requireCondition(
+    !summaryLeaksSource,
+    "An assistant summary included MotionDoc source or source-like markup"
+  );
+  requireCondition(
+    longestAssistantMessage <= SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS,
+    `An assistant summary exceeded ${SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS} characters`
+  );
 
   console.log(JSON.stringify({
     accepted: true,
@@ -134,16 +149,11 @@ async function main(): Promise<void> {
     },
     qualitySignals: {
       summaryLeaksMotionDocSource: summaryLeaksSource,
+      longestAssistantMessage,
       finalSlideCount: countSlides(motionDoc)
     }
   }, null, 2));
 
-  if (summaryLeaksSource) {
-    console.warn(
-      "Quality warning: an assistant summary appears to include raw MotionDoc source. " +
-      "The product flow passed, but this should be treated as a presentation-quality gap."
-    );
-  }
 }
 
 function readConfig(): {

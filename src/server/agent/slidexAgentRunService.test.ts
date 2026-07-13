@@ -21,6 +21,7 @@ import {
   type AgentRunLogger,
   type SlideXAgentRunServiceOptions
 } from "./slidexAgentRunService.js";
+import { SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS } from "./slidexHeddleAgent.js";
 
 test("streams a reconnectable run and persists the completed SlideX session", async () => {
   const fixture = await createFixture();
@@ -313,6 +314,162 @@ test("turns a rejected BYOK credential into a stable actionable terminal", async
   }
 });
 
+test("turns exhausted BYOK quota into a distinct actionable terminal", async () => {
+  const fixture = await createFixture(createEngine(async () => ({
+    ...createTurnResult(),
+    outcome: "error",
+    summary: "LLM error: sensitive provider quota and billing detail",
+    failure: { source: "model", code: "quota" }
+  })));
+  try {
+    const accepted = await fixture.service.start(fixture.user, {
+      message: "Update it",
+      motionDoc: "# Original deck",
+      sourceRevision: "revision-1",
+      llmApiKey: "quota-exhausted-api-key"
+    });
+    const events = await collect(fixture.service.subscribe({
+      userId: fixture.user.id,
+      runId: accepted.runId
+    }));
+    const terminal = events.at(-1);
+
+    assert.ok(terminal && terminal.kind === "error");
+    assert.deepEqual(terminal.error, {
+      code: "model_quota_exhausted",
+      message: "This OpenAI API key is valid, but it has no available quota. Check the account billing or use a different key, then try again."
+    });
+    assert.doesNotMatch(JSON.stringify(terminal), /sensitive provider/);
+
+    const state = await fixture.service.getSessionState(fixture.user.id, accepted.session.id);
+    assert.equal(state.session.messages.at(-1)?.content, terminal.error.message);
+    assert.equal(
+      state.session.messages.at(-1)?.metadata?.errorCode,
+      "model_quota_exhausted"
+    );
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("replaces source-like terminal summaries before returning or persisting them", async (t) => {
+  const sourceLikeSummaries = [
+    "```mdx\n# Deck source\n```",
+    "<Slide duration={5}>secret source</Slide>",
+    "<Table rows={secretRows} />",
+    "Final MotionDoc source: # secret deck"
+  ];
+
+  for (const summary of sourceLikeSummaries) {
+    await t.test(summary.split("\n")[0], async () => {
+      const fixture = await createFixture(createEngine(async () => createTurnResult({ summary })));
+      try {
+        const accepted = await fixture.service.start(fixture.user, {
+          message: "Update it",
+          motionDoc: "# Original deck",
+          sourceRevision: "revision-1",
+          llmApiKey: "test-api-key"
+        });
+        const events = await collect(fixture.service.subscribe({
+          userId: fixture.user.id,
+          runId: accepted.runId
+        }));
+        const terminal = events.at(-1);
+
+        assert.ok(terminal && terminal.kind === "result");
+        assert.equal(terminal.result.assistantMessage, "Updated the deck. Validation passed.");
+        assert.ok(
+          terminal.result.assistantMessage.length <= SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS
+        );
+        assert.doesNotMatch(
+          terminal.result.assistantMessage,
+          /```|~~~|<Slide\b|Final MotionDoc source/i
+        );
+
+        const state = await fixture.service.getSessionState(
+          fixture.user.id,
+          accepted.session.id
+        );
+        assert.equal(
+          state.session.messages.at(-1)?.content,
+          terminal.result.assistantMessage
+        );
+      } finally {
+        await fs.rm(fixture.root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("bounds source-free assistant copy and retains the authoritative validation outcome", async () => {
+  const fixture = await createFixture(createEngine(async () => createTurnResult({
+    summary: "Updated the deck with clearer hierarchy and more focused copy. ".repeat(12)
+  })));
+  try {
+    const accepted = await fixture.service.start(fixture.user, {
+      message: "Update it",
+      motionDoc: "# Original deck",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key"
+    });
+    const events = await collect(fixture.service.subscribe({
+      userId: fixture.user.id,
+      runId: accepted.runId
+    }));
+    const terminal = events.at(-1);
+
+    assert.ok(terminal && terminal.kind === "result");
+    assert.ok(terminal.result.assistantMessage.length <= SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS);
+    assert.match(terminal.result.assistantMessage, /… Validation passed\.$/);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("does not apply changed decks whose final source is invalid or unvalidated", async (t) => {
+  for (const validation of [false, null, "tool_error"] as const) {
+    await t.test(validation === false
+      ? "invalid"
+      : validation === null ? "unvalidated" : "validation tool error", async () => {
+      const fixture = await createFixture(createEngine(async () => createTurnResult({
+        validation
+      })));
+      try {
+        const accepted = await fixture.service.start(fixture.user, {
+          message: "Update it",
+          motionDoc: "# Original deck",
+          sourceRevision: "revision-1",
+          llmApiKey: "test-api-key"
+        });
+        const events = await collect(fixture.service.subscribe({
+          userId: fixture.user.id,
+          runId: accepted.runId
+        }));
+        const terminal = events.at(-1);
+
+        assert.ok(terminal && terminal.kind === "error");
+        assert.deepEqual(terminal.error, {
+          code: "deck_validation_failed",
+          message: "The agent produced a deck that did not pass validation, so it was not applied. Try again."
+        });
+
+        const state = await fixture.service.getSessionState(
+          fixture.user.id,
+          accepted.session.id
+        );
+        assert.equal(state.session.latestMotionDoc, "# Original deck");
+        assert.equal(state.session.messages.at(-1)?.content, terminal.error.message);
+        assert.equal(
+          state.session.messages.at(-1)?.metadata?.errorCode,
+          "deck_validation_failed"
+        );
+      } finally {
+        await fs.rm(fixture.root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 test("never exposes or persists the ephemeral model key", async () => {
   const sentinel = "sk-sentinel-ephemeral-only-123456";
   const records: Array<Record<string, unknown>> = [];
@@ -456,6 +613,22 @@ test("projects Heddle activities to the JSON-safe public client shape", () => {
   assert.deepEqual(event.activity, { type: "loop.finished" });
 });
 
+test("withholds untrusted assistant stream text until terminal projection", () => {
+  const event = AgentRunProtocol.parseEvent({
+    kind: "activity",
+    runId: "run-1",
+    sequence: 1,
+    timestamp: "2026-07-11T00:00:00.000Z",
+    activity: {
+      type: "assistant.stream",
+      text: "Final MotionDoc source: <Slide>secret</Slide>"
+    }
+  });
+
+  assert.ok(event.kind === "activity");
+  assert.deepEqual(event.activity, { type: "assistant.stream" });
+});
+
 async function createFixture(
   engine = createEngine(),
   logger?: AgentRunLogger,
@@ -531,13 +704,47 @@ function createEngine(
   } as unknown as ConversationEngine;
 }
 
-function createTurnResult(): ConversationTurnResultSummary {
+function createTurnResult(input: {
+  summary?: string;
+  validation?: boolean | null | "tool_error";
+} = {}): ConversationTurnResultSummary {
+  const validation = input.validation === null
+    ? []
+    : [createValidationToolResult(
+        typeof input.validation === "boolean" ? input.validation : true,
+        input.validation === "tool_error"
+      )];
   return {
     outcome: "complete",
-    summary: "Updated the deck",
+    summary: input.summary ?? "Updated the deck",
     session: {} as ConversationTurnResultSummary["session"],
     artifacts: [],
-    toolResults: []
+    toolResults: validation
+  };
+}
+
+function createValidationToolResult(
+  isValid: boolean,
+  isError = false
+): ConversationTurnResultSummary["toolResults"][number] {
+  return {
+    call: {
+      id: "validate-final-motiondoc",
+      tool: "slidex_validate_motion_doc",
+      input: { source: "# Updated deck" }
+    },
+    result: {
+      ok: true,
+      output: {
+        isError,
+        structuredContent: {
+          result: { isValid, issues: [] }
+        }
+      }
+    },
+    durationMs: 1,
+    step: 1,
+    timestamp: "2026-07-11T00:00:00.000Z"
   };
 }
 

@@ -3,8 +3,10 @@ import type {
   ConversationActivity,
   ConversationEngineHost,
   ConversationTurnResultSummary,
+  ConversationTurnToolResult,
   ToolApprovalPolicyContext
 } from "@roackb2/heddle";
+import { z } from "zod";
 import type { AgentEmit, AgentRunResult } from "./types.js";
 
 /**
@@ -59,6 +61,41 @@ export type RunSlideXAgentArgs = {
 };
 
 const DEFAULT_MAX_STEPS = 24;
+export const SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS = 240;
+
+const VALIDATE_MOTION_DOC_TOOL = "slidex_validate_motion_doc";
+const MOTION_DOC_SOURCE_MARKERS = [
+  /```|~~~/,
+  /<\s*\/?\s*[A-Z][A-Za-z0-9.:-]*\b/,
+  /(?:Final|Current)\s+MotionDoc\s+source/i
+] as const;
+const VALIDATION_PASSED_MARKER = /\b(?:validation\s+(?:passed|succeeded)|passed\s+validation|isValid\s*:\s*true)\b/i;
+const VALIDATION_SUFFIX = " Validation passed.";
+
+const ValidationToolInputSchema = z.object({
+  source: z.string()
+});
+
+const ValidationToolOutputSchema = z.object({
+  isError: z.literal(false),
+  structuredContent: z.object({
+    result: z.object({
+      isValid: z.boolean()
+    })
+  })
+});
+
+export class SlideXDeckValidationError extends Error {
+  constructor() {
+    super("The final MotionDoc was not successfully validated");
+    this.name = "SlideXDeckValidationError";
+  }
+}
+
+export type SlideXTurnProjection = {
+  motionDoc: string;
+  assistantMessage: string;
+};
 
 export async function runSlideXAgent(args: RunSlideXAgentArgs): Promise<AgentRunResult> {
   const { engine, emit } = args;
@@ -78,9 +115,15 @@ export async function runSlideXAgent(args: RunSlideXAgentArgs): Promise<AgentRun
     host
   });
 
-  const motionDoc = resolveMotionDoc(engine, session.id, previousArtifactId, args.motionDoc);
-  if (motionDoc !== args.motionDoc) {
-    await emit({ type: "motionDoc", motionDoc });
+  const projection = projectSlideXTurnResult({
+    engine,
+    sessionId: session.id,
+    previousArtifactId,
+    initialMotionDoc: args.motionDoc,
+    result
+  });
+  if (projection.motionDoc !== args.motionDoc) {
+    await emit({ type: "motionDoc", motionDoc: projection.motionDoc });
   }
 
   await emit({
@@ -90,8 +133,8 @@ export async function runSlideXAgent(args: RunSlideXAgentArgs): Promise<AgentRun
   });
 
   return {
-    motionDoc,
-    assistantMessage: result.summary,
+    motionDoc: projection.motionDoc,
+    assistantMessage: projection.assistantMessage,
     metadata: {
       outcome: result.outcome,
       toolCalls: result.toolResults.length
@@ -101,14 +144,11 @@ export async function runSlideXAgent(args: RunSlideXAgentArgs): Promise<AgentRun
 
 /** Builds a host that translates Heddle activity into transport progress events. */
 function createProgressHost(emit: AgentEmit): ConversationEngineHost {
-  // assistant.stream text is cumulative per step; track per-step so we emit deltas.
-  const streamedByStep = new Map<number, string>();
-
   return {
     ...createSlideXApprovalHost(),
     events: {
       onActivity(activity: ConversationActivity) {
-        void emitForActivity(activity, emit, streamedByStep);
+        void emitForActivity(activity, emit);
       }
     }
   };
@@ -130,21 +170,13 @@ export function createSlideXApprovalHost(): ConversationEngineHost {
 
 async function emitForActivity(
   activity: ConversationActivity,
-  emit: AgentEmit,
-  streamedByStep: Map<number, string>
+  emit: AgentEmit
 ): Promise<void> {
   switch (activity.type) {
-    case HeddleEventType.assistantStream: {
-      const prev = streamedByStep.get(activity.step) ?? "";
-      const delta = activity.text.startsWith(prev)
-        ? activity.text.slice(prev.length)
-        : activity.text;
-      streamedByStep.set(activity.step, activity.text);
-      if (delta) {
-        await emit({ type: "token", text: delta });
-      }
+    case HeddleEventType.assistantStream:
+      // Model text is not a product-safe summary until the terminal result has
+      // passed SlideX's source-exclusion and length contract below.
       return;
-    }
     case HeddleEventType.toolCalling:
       await emit({ type: "tool", name: activity.tool, status: "started" });
       return;
@@ -171,6 +203,102 @@ async function emitForActivity(
   }
 }
 
+/**
+ * Finalizes the SlideX-specific product result for both agent transports.
+ *
+ * A changed deck must have a successful validation tool result for the exact
+ * MotionDoc being returned. Model-authored summary text is never partially
+ * scrubbed: source-like output is replaced with stable product copy, while
+ * source-free output is bounded for the narrow chat panel.
+ */
+export function projectSlideXTurnResult(input: {
+  engine: ConversationEngineLike;
+  sessionId: string;
+  previousArtifactId?: string;
+  initialMotionDoc: string;
+  result: ConversationTurnResultSummary;
+}): SlideXTurnProjection {
+  if (input.result.failure || input.result.outcome === "error") {
+    throw new Error("SlideX agent turn did not complete successfully");
+  }
+
+  const motionDoc = resolveMotionDoc(
+    input.engine,
+    input.sessionId,
+    input.previousArtifactId,
+    input.initialMotionDoc
+  );
+  const motionDocChanged = motionDoc !== input.initialMotionDoc;
+  if (motionDocChanged && resolveFinalValidation(input.result.toolResults, motionDoc) !== true) {
+    throw new SlideXDeckValidationError();
+  }
+
+  return {
+    motionDoc,
+    assistantMessage: projectAssistantMessage({
+      summary: input.result.summary,
+      motionDocChanged
+    })
+  };
+}
+
+function resolveFinalValidation(
+  toolResults: ConversationTurnToolResult[],
+  motionDoc: string
+): boolean | undefined {
+  return toolResults.reduceRight<boolean | undefined>((resolved, toolResult) => {
+    if (resolved !== undefined || toolResult.call.tool !== VALIDATE_MOTION_DOC_TOOL) {
+      return resolved;
+    }
+
+    const callInput = ValidationToolInputSchema.safeParse(toolResult.call.input);
+    if (!callInput.success || callInput.data.source !== motionDoc) {
+      return undefined;
+    }
+    if (!toolResult.result.ok) {
+      return false;
+    }
+
+    const output = ValidationToolOutputSchema.safeParse(toolResult.result.output);
+    return output.success ? output.data.structuredContent.result.isValid : false;
+  }, undefined);
+}
+
+function projectAssistantMessage(input: {
+  summary: string;
+  motionDocChanged: boolean;
+}): string {
+  const normalized = input.summary.replace(/\s+/g, " ").trim();
+  const sourceFreeSummary = normalized
+    && !MOTION_DOC_SOURCE_MARKERS.some((marker) => marker.test(normalized))
+    ? normalized
+    : input.motionDocChanged
+      ? "Updated the deck."
+      : "Answered the request without changing the deck.";
+  const needsValidationSuffix = input.motionDocChanged
+    && !VALIDATION_PASSED_MARKER.test(sourceFreeSummary);
+  const contentLimit = needsValidationSuffix
+    ? SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS - VALIDATION_SUFFIX.length
+    : SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS;
+  const conciseSummary = truncateAtWord(sourceFreeSummary, contentLimit);
+  return needsValidationSuffix
+    ? `${conciseSummary}${VALIDATION_SUFFIX}`
+    : conciseSummary;
+}
+
+function truncateAtWord(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+
+  const candidate = value.slice(0, maxChars - 1).trimEnd();
+  const wordBoundary = candidate.lastIndexOf(" ");
+  const truncated = wordBoundary > maxChars / 2
+    ? candidate.slice(0, wordBoundary)
+    : candidate;
+  return `${truncated.trimEnd()}…`;
+}
+
 export function buildPrompt(args: Pick<RunSlideXAgentArgs, "motionDoc" | "message">): string {
   const trimmedDoc = args.motionDoc.trim();
   const motionDocContext = trimmedDoc
@@ -184,7 +312,7 @@ ${trimmedDoc}
 
 User request: ${args.message}
 
-Use the SlideX MotionDoc tools to fulfill the request, validate the result, and reply with a short summary of what changed.`;
+Use the SlideX MotionDoc tools to fulfill the request and validate the final result. Reply with one short plain-text summary of what changed and whether validation passed. Never include MotionDoc source, fenced code, or SlideX component markup in the reply.`;
 }
 
 export function resolveConversationSession(
