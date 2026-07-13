@@ -1,13 +1,32 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { nanoid } from "nanoid";
+import { z } from "zod";
 import {
   ChatMessageSchema,
   SessionSchema,
+  type AgentSessionPage,
   type ChatMessage,
   type Session,
   type SessionSummary
 } from "../../shared/schema.js";
+
+const AgentSessionCursorSchema = z.object({
+  id: z.string().min(1),
+  lastActivityAt: z.string().datetime()
+}).strict();
+
+type BoundSession = Session & {
+  presentationId: string;
+  presentationTitle: string;
+};
+
+export class SessionCatalogCursorError extends Error {
+  constructor() {
+    super("Conversation catalog cursor is invalid");
+    this.name = "SessionCatalogCursorError";
+  }
+}
 
 export class SessionStore {
   constructor(private readonly rootDir: string) {}
@@ -17,23 +36,14 @@ export class SessionStore {
   }
 
   async listSessions(userId: string): Promise<SessionSummary[]> {
-    await this.ensureReady();
-    const dir = this.userDir(userId);
-    await fs.mkdir(dir, { recursive: true });
-    const names = await fs.readdir(dir);
-    const sessions = await Promise.all(
-      names
-        .filter((name) => name.endsWith(".json"))
-        .map(async (name) => this.readSessionFile(path.join(dir, name)).catch(() => null))
-    );
-
-    return sessions
-      .filter((session): session is Session => Boolean(session))
+    return (await this.readUserSessions(userId))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .map((session) => ({
         id: session.id,
         userId: session.userId,
         title: session.title,
+        presentationId: session.presentationId,
+        presentationTitle: session.presentationTitle,
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
         messageCount: session.messages.length,
@@ -41,16 +51,55 @@ export class SessionStore {
       }));
   }
 
+  /**
+   * Returns a bounded, stable catalog projection. Conversation contents remain
+   * private to the authorized detail endpoint and never enter list responses.
+   */
+  async listAgentSessions(
+    userId: string,
+    input: { limit: number; cursor?: string }
+  ): Promise<AgentSessionPage> {
+    const cursor = input.cursor ? decodeCursor(input.cursor) : undefined;
+    const sessions = (await this.readUserSessions(userId))
+      .filter(isBoundSession)
+      .sort(compareSessionsNewestFirst)
+      .filter((session) => !cursor || isAfterCursor(session, cursor));
+    const page = sessions.slice(0, input.limit + 1);
+    const visible = page.slice(0, input.limit);
+    const last = visible.at(-1);
+
+    return {
+      items: visible.map((session) => ({
+        id: session.id,
+        title: session.title,
+        presentation: {
+          id: session.presentationId,
+          title: session.presentationTitle
+        },
+        createdAt: session.createdAt,
+        lastActivityAt: session.updatedAt,
+        messageCount: session.messages.length
+      })),
+      ...(page.length > input.limit && last
+        ? { nextCursor: encodeCursor(last) }
+        : {})
+    };
+  }
+
   async createSession(input: {
     userId: string;
     title?: string;
     motionDoc?: string;
+    presentationId?: string;
+    presentationTitle?: string;
   }): Promise<Session> {
     const now = new Date().toISOString();
     const session: Session = {
       id: nanoid(),
       userId: input.userId,
       title: input.title ?? "Untitled deck",
+      ...(input.presentationId ? { presentationId: input.presentationId } : {}),
+      ...(input.presentationTitle ? { presentationTitle: input.presentationTitle } : {}),
       createdAt: now,
       updatedAt: now,
       latestMotionDoc: input.motionDoc ?? "",
@@ -127,6 +176,19 @@ export class SessionStore {
     return SessionSchema.parse(JSON.parse(text));
   }
 
+  private async readUserSessions(userId: string): Promise<Session[]> {
+    await this.ensureReady();
+    const dir = this.userDir(userId);
+    await fs.mkdir(dir, { recursive: true });
+    const names = await fs.readdir(dir);
+    const sessions = await Promise.all(
+      names
+        .filter((name) => name.endsWith(".json"))
+        .map(async (name) => this.readSessionFile(path.join(dir, name)).catch(() => null))
+    );
+    return sessions.filter((session): session is Session => Boolean(session));
+  }
+
   private get sessionsRoot(): string {
     return path.join(this.rootDir, "sessions");
   }
@@ -137,6 +199,40 @@ export class SessionStore {
 
   private sessionPath(userId: string, sessionId: string): string {
     return path.join(this.userDir(userId), `${safePathSegment(sessionId)}.json`);
+  }
+}
+
+function isBoundSession(session: Session): session is BoundSession {
+  return Boolean(session.presentationId && session.presentationTitle);
+}
+
+function compareSessionsNewestFirst(left: Session, right: Session): number {
+  return right.updatedAt.localeCompare(left.updatedAt)
+    || right.id.localeCompare(left.id);
+}
+
+function isAfterCursor(
+  session: Session,
+  cursor: z.infer<typeof AgentSessionCursorSchema>
+): boolean {
+  return session.updatedAt < cursor.lastActivityAt
+    || (session.updatedAt === cursor.lastActivityAt && session.id < cursor.id);
+}
+
+function encodeCursor(session: Pick<Session, "id" | "updatedAt">): string {
+  return Buffer.from(JSON.stringify({
+    id: session.id,
+    lastActivityAt: session.updatedAt
+  })).toString("base64url");
+}
+
+function decodeCursor(value: string): z.infer<typeof AgentSessionCursorSchema> {
+  try {
+    return AgentSessionCursorSchema.parse(
+      JSON.parse(Buffer.from(value, "base64url").toString("utf8"))
+    );
+  } catch {
+    throw new SessionCatalogCursorError();
   }
 }
 

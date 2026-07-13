@@ -9,6 +9,8 @@ It includes:
 - Zod validation for API inputs and persisted sessions.
 - Supabase Auth token verification.
 - Local JSON session storage for Railway persistent volumes.
+- A bounded, presentation-aware conversation catalog for restoring durable
+  work in the SlideX editor.
 - Heddle adapter that creates a per-request engine with the user's own LLM key while reusing one durable Heddle conversation per SlideX session.
 - MotionDoc MCP stdio subprocess manager.
 - React chat panel served by the same Express app in production.
@@ -126,7 +128,9 @@ valid OpenAI API key. The expected product behavior is:
 5. An invalid key produces a stable credential-rejected message without a raw
    provider error; **Forget key** removes the tab-local key.
 6. **New conversation** clears chat continuity without deleting the current
-   editor deck.
+   editor deck or the previous conversation.
+7. The conversation catalog lists durable work, selects earlier sessions, and
+   deletes only through an explicit destructive action.
 
 For a repeatable API-level proof, export `OPENAI_API_KEY` (or
 `PERSONAL_OPENAI_API_KEY`) in the shell and run:
@@ -168,7 +172,7 @@ auth bypass. The same test, typecheck, and build run in
 `.github/workflows/agent-regression.yml`. Keep product lifecycle assertions in
 this composed test and use handler stubs only for isolated transport errors.
 
-The reconnectable run API is also default-off so deploying this branch preserves the upstream server behavior. Set `SLIDEX_AGENT_ENABLED=true` to register `/api/agent/runs`, `/api/agent/runs/:runId/events`, and `/api/agent/runs/:runId/cancel`. The SlideX editor must be built with `NEXT_PUBLIC_SLIDEX_AGENT_ENABLED=true` at the same time. Leave both flags unset or `false` to keep the conversational agent hidden; the existing `/api/agent/stream` route is unaffected.
+The reconnectable run API is also default-off so deploying this branch preserves the upstream server behavior. Set `SLIDEX_AGENT_ENABLED=true` to register `/api/agent/runs`, the bounded `/api/agent/sessions` catalog, session detail/association/deletion, `/api/agent/runs/:runId/events`, and `/api/agent/runs/:runId/cancel`. The SlideX editor must be built with `NEXT_PUBLIC_SLIDEX_AGENT_ENABLED=true` at the same time. Leave both flags unset or `false` to keep the conversational agent hidden; the existing `/api/agent/stream` route is unaffected.
 
 When that server flag is enabled in production, `CORS_ORIGIN` must be an
 explicit comma-separated allowlist such as `https://editor.example.com`; `*`
@@ -314,8 +318,12 @@ Events are emitted as normal SSE frames with `event:` and JSON `data:` fields: `
 When `SLIDEX_AGENT_ENABLED=true`, the reconnectable run API used by the SlideX editor is:
 
 - `POST /api/agent/runs` to accept a run and return its `runId`.
+- `GET /api/agent/sessions?limit=<1..50>&cursor=<opaque>` to list a bounded,
+  newest-first catalog without returning chat or MotionDoc source.
 - `GET /api/agent/sessions/:sessionId` to restore durable product history and
   discover the active Heddle run for that authenticated conversation.
+- `PUT /api/agent/sessions/:sessionId/presentation` to immutably associate a
+  legacy conversation with one canonical Presentation ID or refresh its title.
 - `DELETE /api/agent/sessions/:sessionId` to cancel any active run and reset the
   product conversation without changing the editor's current deck.
 - `GET /api/agent/runs/:runId/events`, using either `?after=<sequence>` or

@@ -412,50 +412,40 @@ validation result, and pass/fail for each turn.
 | MCP preparation fails | Verify the configured command, arguments, working directory, installed artifact, Node version, and filesystem permissions inside the service environment. |
 | Completed result does not overwrite the deck | Check validation and source-revision conflict state. A failed validation or manual edit intentionally prevents silent replacement. |
 
-## Immediate next slice: session list and switcher
+## Session list and switcher
 
-The single-session conversational loop is sufficient for the current MVP. The
-next product slice should make completed work discoverable without inventing a
-durable project hierarchy that SlideX does not yet have.
-
-No additional user-facing feature should precede this slice. The remaining
-hands-on diary is an acceptance activity, not another implementation. The MCP
-image-packaging gap must close before a production rollout, but it does not
-block building and validating the session list against the current local
-single-replica service.
-
-Recommended first model:
+The first durable-work slice uses this model:
 
 - the authenticated user owns a newest-first list of SlideX product sessions;
 - one editor tab has one selected session at a time;
-- selecting a session restores its latest MotionDoc and visible chat;
+- selecting a session restores visible chat and retained run state but never
+  replaces the canonical Presentation with a stale session snapshot;
+- selecting a session for another Presentation first saves the current local
+  Presentation, then navigates to the target Presentation and hydrates chat;
 - a new/imported deck starts unbound until the first accepted agent turn;
 - **New conversation** clears the selection and keeps the current deck as the
   seed for the next turn; it must not delete the previous session; and
 - deletion is a separate explicit destructive action.
 
-The server already has `SessionStore.listSessions(userId)` and authenticated
-tRPC session catalog procedures. The editor does not yet expose a catalog or
-selection experience. The first implementation should:
+The implementation:
 
-1. expose a bounded, Zod-validated, newest-first authenticated catalog for the
-   editor, with stable pagination before the list can grow without bound;
-2. return only `sessionId`, title, updated time, message count, and whether a
-   MotionDoc exists—never user IDs, Heddle paths, traces, artifacts, or raw
-   history in list rows;
-3. use TanStack Query for list/detail loading, cache, error state, and
+1. exposes a bounded, Zod-validated, newest-first authenticated catalog with an
+   opaque stable cursor;
+2. returns only session ID, title, Presentation identity/title, timestamps, and
+   message count—never user IDs, Heddle paths, traces, artifacts, MotionDoc
+   source, or raw history in list rows;
+3. uses TanStack Query for list loading, cache, error state, and
    invalidation; keep Heddle Remote responsible for live-run streaming and
    cursor semantics;
-4. add a **Sessions** control in the Agent header that opens an in-panel list,
+4. adds a **Conversation history** control in the Agent header that opens an in-panel list,
    format last-updated times with `dayjs`, and use stable session IDs rather
    than titles for identity;
-5. on selection, fetch authorized detail, apply its MotionDoc through the
-   existing undo-aware/revision-aware path, hydrate chat, save the tab binding,
-   and reattach a retained active run;
-6. block switching away from an active run until it settles or the user cancels
+5. on selection, fetches authorized detail, hydrates chat, saves the tab
+   binding, and reattaches a retained active run without applying the stored
+   MotionDoc snapshot;
+6. blocks switching away from an active run until it settles or the user cancels
    it; background multi-session execution is out of scope; and
-7. require explicit confirmation before a switch would discard manual editor
-   changes. Reuse the existing source-revision conflict vocabulary.
+7. keeps deletion explicit and confirmed while preserving the Presentation.
 
 Do not create empty sessions when the list opens, expose Heddle's internal
 session list, replay product chat into model prompts, or add a thin service that
@@ -467,12 +457,20 @@ Acceptance for the slice:
 
 1. Complete two turns in session A.
 2. Start session B without deleting A.
-3. Select A and restore its exact deck and chat.
-4. Continue A and prove Heddle reused its conversation.
+3. Select A and restore its chat without rolling the current Presentation back.
+4. Continue A and prove Heddle reused its conversation with the current
+   Presentation source as the next turn base.
 5. Select B, refresh, and prove B remains selected while BYOK is forgotten.
 6. Prove duplicate titles do not collide and another user cannot list or open
    either session.
-7. Prove switching never races an active run or silently discards manual edits.
+7. Prove switching never races an active run and cross-Presentation selection
+   navigates to the target canonical Presentation.
+
+The current Railway MVP keeps product sessions in atomic JSON files on one
+persistent volume. Supabase supplies product identity only. Before scaling to
+multiple replicas, replace `SessionStore` behind the same public contract with
+the agreed database repository; do not run JSON and Postgres as competing
+production sources of truth.
 
 ## Code reading order
 

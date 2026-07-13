@@ -21,6 +21,11 @@ This directory owns the SlideX-specific orchestration around the Heddle SDK.
   event mapper. Register Heddle lifecycle hooks together in `start`, but keep
   accepted, result, error, error-projection, and settled behavior in named
   service methods rather than inline callbacks.
+- The product session association is immutable: a conversation may refresh its
+  Presentation title but cannot be rebound to another Presentation ID.
+  Presentation-aware catalog pagination remains in `server/storage`; the run
+  service applies and validates the association when a run starts or a legacy
+  session is attached.
 - `types.ts` and `runtime.ts` retain the legacy request-bound streaming driver
   while clients migrate to the reconnectable run protocol.
 

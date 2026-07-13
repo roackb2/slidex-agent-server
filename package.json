@@ -12,7 +12,7 @@
     "dev:web": "vite --host 0.0.0.0",
     "build": "tsc -p tsconfig.server.json && vite build",
     "start": "node dist/server/index.js",
-    "test": "tsx --test src/server/*.test.ts src/server/agent/*.test.ts src/server/lifecycle/*.test.ts src/server/observability/*.test.ts src/server/routes/*.test.ts",
+    "test": "tsx --test src/server/*.test.ts src/server/agent/*.test.ts src/server/lifecycle/*.test.ts src/server/observability/*.test.ts src/server/routes/*.test.ts src/server/storage/*.test.ts",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "try:agent": "tsx scripts/trySlidexAgent.ts",
     "try:anonymous-byok": "tsx scripts/tryAnonymousByok.ts"
