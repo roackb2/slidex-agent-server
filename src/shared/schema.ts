@@ -18,6 +18,8 @@ export const SessionSchema = z.object({
   id: z.string(),
   userId: z.string(),
   title: z.string(),
+  presentationId: z.string().min(1).optional(),
+  presentationTitle: z.string().min(1).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
   latestMotionDoc: z.string().default(""),
@@ -28,6 +30,8 @@ export const SessionSummarySchema = SessionSchema.pick({
   id: true,
   userId: true,
   title: true,
+  presentationId: true,
+  presentationTitle: true,
   createdAt: true,
   updatedAt: true
 }).extend({
@@ -57,7 +61,13 @@ export const AgentStreamInputSchema = z.object({
   model: z.string().trim().min(1).max(120).optional()
 });
 
+export const AgentPresentationInputSchema = z.object({
+  presentationId: z.string().trim().min(1).max(160),
+  presentationTitle: z.string().trim().min(1).max(120)
+});
+
 export const StartAgentRunInputSchema = AgentStreamInputSchema.extend({
+  ...AgentPresentationInputSchema.shape,
   sourceRevision: z.string().trim().min(1).max(128)
 });
 
@@ -76,6 +86,34 @@ export const ActiveAgentRunSchema = z.object({
 export const AgentSessionStateSchema = z.object({
   session: SessionSchema,
   activeRun: ActiveAgentRunSchema.nullable()
+});
+
+export const AgentSessionSummarySchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  presentation: z.object({
+    id: z.string().min(1),
+    title: z.string().min(1)
+  }),
+  createdAt: z.string().datetime(),
+  lastActivityAt: z.string().datetime(),
+  messageCount: z.number().int().nonnegative()
+});
+
+export const AgentSessionPageSchema = z.object({
+  items: z.array(AgentSessionSummarySchema),
+  nextCursor: z.string().min(1).optional()
+});
+
+export const ListAgentSessionsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  cursor: z.string().min(1).max(1_024).optional()
+});
+
+export const AttachAgentSessionInputSchema = AgentPresentationInputSchema;
+
+export const AttachAgentSessionResultSchema = z.object({
+  session: SessionSchema
 });
 
 export const ResetAgentSessionResultSchema = z.object({
@@ -169,6 +207,10 @@ export type AgentStreamEvent = z.infer<typeof AgentStreamEventSchema>;
 export type StartAgentRunInput = z.infer<typeof StartAgentRunInputSchema>;
 export type StartAgentRunResult = z.infer<typeof StartAgentRunResultSchema>;
 export type AgentSessionState = z.infer<typeof AgentSessionStateSchema>;
+export type AgentSessionSummary = z.infer<typeof AgentSessionSummarySchema>;
+export type AgentSessionPage = z.infer<typeof AgentSessionPageSchema>;
+export type ListAgentSessionsQuery = z.infer<typeof ListAgentSessionsQuerySchema>;
+export type AttachAgentSessionInput = z.infer<typeof AttachAgentSessionInputSchema>;
 export type AgentApiErrorCode = z.infer<typeof AgentApiErrorCodeSchema>;
 export type AgentRunEvent = ConversationRunProtocolEvent<
   z.infer<typeof PublicConversationActivitySchema>,

@@ -14,6 +14,7 @@ import type {
   AgentApiErrorCode,
   AgentRunEvent,
   AgentSessionState,
+  AttachAgentSessionInput,
   Session,
   StartAgentRunInput
 } from "../../shared/schema.js";
@@ -282,6 +283,36 @@ export class SlideXAgentRunService {
     };
   }
 
+  /**
+   * Immutably associates legacy product sessions with their canonical
+   * presentation. Repeated calls may refresh the display title, but a session
+   * can never be rebound to another presentation.
+   */
+  async attachSessionToPresentation(
+    userId: string,
+    sessionId: string,
+    input: AttachAgentSessionInput
+  ): Promise<Session> {
+    const session = await this.requireProductSession(userId, sessionId);
+    if (session.presentationId && session.presentationId !== input.presentationId) {
+      throw new SlideXAgentRunServiceError(
+        "invalid_request",
+        "Conversation belongs to a different presentation"
+      );
+    }
+    if (
+      session.presentationId === input.presentationId
+      && session.presentationTitle === input.presentationTitle
+    ) {
+      return session;
+    }
+    return this.options.sessionStore.writeSession({
+      ...session,
+      presentationId: input.presentationId,
+      presentationTitle: input.presentationTitle
+    });
+  }
+
   async resetSession(userId: string, sessionId: string): Promise<{ reset: true }> {
     await this.requireProductSession(userId, sessionId);
     const address = { userId, sessionId };
@@ -329,12 +360,17 @@ export class SlideXAgentRunService {
 
   private async resolveProductSession(userId: string, input: StartAgentRunInput): Promise<Session> {
     if (input.sessionId) {
-      return this.requireProductSession(userId, input.sessionId);
+      return this.attachSessionToPresentation(userId, input.sessionId, {
+        presentationId: input.presentationId,
+        presentationTitle: input.presentationTitle
+      });
     }
     return this.options.sessionStore.createSession({
       userId,
-      title: input.title ?? titleFromMessage(input.message),
-      motionDoc: input.motionDoc
+      title: titleFromMessage(input.message),
+      motionDoc: input.motionDoc,
+      presentationId: input.presentationId,
+      presentationTitle: input.presentationTitle
     });
   }
 

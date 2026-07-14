@@ -8,8 +8,10 @@ import { createContextFactory, type ServerDeps } from "./context.js";
 import { createAgentStreamHandler, type AgentStreamDeps } from "./routes/agentStream.js";
 import { SlideXAgentRunService } from "./agent/slidexAgentRunService.js";
 import {
+  createAttachAgentSessionHandler,
   createCancelAgentRunHandler,
   createGetAgentSessionHandler,
+  createListAgentSessionsHandler,
   createResetAgentSessionHandler,
   createStartAgentRunHandler,
   createSubscribeAgentRunHandler
@@ -64,7 +66,15 @@ export function createApp(deps: ServerDeps & Pick<AgentStreamDeps, "mcpManager">
     };
 
     app.post("/api/agent/runs", createStartAgentRunHandler(agentRunRouteDeps));
+    app.get("/api/agent/sessions", createListAgentSessionsHandler({
+      authService: deps.authService,
+      sessionStore: deps.sessionStore
+    }));
     app.get("/api/agent/sessions/:sessionId", createGetAgentSessionHandler(agentRunRouteDeps));
+    app.put(
+      "/api/agent/sessions/:sessionId/presentation",
+      createAttachAgentSessionHandler(agentRunRouteDeps)
+    );
     app.delete("/api/agent/sessions/:sessionId", createResetAgentSessionHandler(agentRunRouteDeps));
     app.get("/api/agent/runs/:runId/events", createSubscribeAgentRunHandler(agentRunRouteDeps));
     app.post("/api/agent/runs/:runId/cancel", createCancelAgentRunHandler(agentRunRouteDeps));

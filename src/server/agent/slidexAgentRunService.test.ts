@@ -14,7 +14,10 @@ import type {
 import type { AuthUser } from "../auth.js";
 import type { Env } from "../env.js";
 import { SessionStore } from "../storage/sessionStore.js";
-import { AgentRunProtocol } from "../../shared/schema.js";
+import {
+  AgentRunProtocol,
+  type StartAgentRunInput
+} from "../../shared/schema.js";
 import {
   SlideXAgentRunService,
   SlideXAgentRunServiceError,
@@ -26,7 +29,7 @@ import { SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS } from "./slidexHeddleAgent.js";
 test("streams a reconnectable run and persists the completed SlideX session", async () => {
   const fixture = await createFixture();
   try {
-    const accepted = await fixture.service.start(fixture.user, {
+    const accepted = await fixture.start({
       message: "Make the title more direct",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
@@ -78,7 +81,7 @@ test("emits correlation-safe accepted and terminal lifecycle facts", async () =>
   const fixture = await createFixture(createEngine(), logger);
 
   try {
-    const accepted = await fixture.service.start(fixture.user, {
+    const accepted = await fixture.start({
       message: "Sensitive user request",
       motionDoc: "# Sensitive source",
       sourceRevision: "revision-1",
@@ -133,6 +136,8 @@ test("runs the deterministic mock through the same reconnectable lifecycle", asy
 
   try {
     const accepted = await service.start(user, {
+      presentationId: "presentation-1",
+      presentationTitle: "Test deck",
       message: "Add a recovery note",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
@@ -161,7 +166,7 @@ test("runs the deterministic mock through the same reconnectable lifecycle", asy
 test("keeps runs private to the authenticated user", async () => {
   const fixture = await createFixture();
   try {
-    const accepted = await fixture.service.start(fixture.user, {
+    const accepted = await fixture.start({
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
@@ -184,7 +189,7 @@ test("hydrates durable history and delegates active-run discovery to Heddle", as
     return createTurnResult();
   }));
   try {
-    const accepted = await fixture.service.start(fixture.user, {
+    const accepted = await fixture.start({
       message: "Keep working",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
@@ -219,7 +224,7 @@ test("persists an explainable cancelled terminal message", async () => {
     input.abortSignal?.addEventListener("abort", abort, { once: true });
   })));
   try {
-    const accepted = await fixture.service.start(fixture.user, {
+    const accepted = await fixture.start({
       message: "Make a long update",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
@@ -246,7 +251,7 @@ test("sanitizes run failures and persists their terminal meaning", async () => {
     throw new Error("sensitive provider failure detail");
   }));
   try {
-    const accepted = await fixture.service.start(fixture.user, {
+    const accepted = await fixture.start({
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
@@ -281,7 +286,7 @@ test("turns a rejected BYOK credential into a stable actionable terminal", async
     failure: { source: "model", code: "authentication" }
   })));
   try {
-    const accepted = await fixture.service.start(fixture.user, {
+    const accepted = await fixture.start({
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
@@ -322,7 +327,7 @@ test("turns exhausted BYOK quota into a distinct actionable terminal", async () 
     failure: { source: "model", code: "quota" }
   })));
   try {
-    const accepted = await fixture.service.start(fixture.user, {
+    const accepted = await fixture.start({
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
@@ -364,7 +369,7 @@ test("replaces source-like terminal summaries before returning or persisting the
     await t.test(summary.split("\n")[0], async () => {
       const fixture = await createFixture(createEngine(async () => createTurnResult({ summary })));
       try {
-        const accepted = await fixture.service.start(fixture.user, {
+        const accepted = await fixture.start({
           message: "Update it",
           motionDoc: "# Original deck",
           sourceRevision: "revision-1",
@@ -406,7 +411,7 @@ test("bounds source-free assistant copy and retains the authoritative validation
     summary: "Updated the deck with clearer hierarchy and more focused copy. ".repeat(12)
   })));
   try {
-    const accepted = await fixture.service.start(fixture.user, {
+    const accepted = await fixture.start({
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
@@ -435,7 +440,7 @@ test("does not apply changed decks whose final source is invalid or unvalidated"
         validation
       })));
       try {
-        const accepted = await fixture.service.start(fixture.user, {
+        const accepted = await fixture.start({
           message: "Update it",
           motionDoc: "# Original deck",
           sourceRevision: "revision-1",
@@ -487,7 +492,7 @@ test("never exposes or persists the ephemeral model key", async () => {
   const fixture = await createFixture(engine, logger, createEngineWithSentinel);
 
   try {
-    const accepted = await fixture.service.start(fixture.user, {
+    const accepted = await fixture.start({
       message: "Keep the credential out of durable state",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
@@ -517,7 +522,7 @@ test("keeps result persistence failures distinct without exposing storage detail
     return createTurnResult();
   }));
   try {
-    const accepted = await fixture.service.start(fixture.user, {
+    const accepted = await fixture.start({
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
@@ -552,7 +557,7 @@ test("resets product state without allowing an in-flight run to recreate it", as
     return createTurnResult();
   }));
   try {
-    const accepted = await fixture.service.start(fixture.user, {
+    const accepted = await fixture.start({
       message: "Keep working",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
@@ -649,8 +654,21 @@ async function createFixture(
     createEngine: createEngineFactory ?? (async () => engine),
     logger
   });
-  return { root, service, sessionStore, user };
+  const start = (
+    input: AgentRunTestInput,
+    options?: Parameters<SlideXAgentRunService["start"]>[2]
+  ) => service.start(user, {
+    presentationId: "presentation-1",
+    presentationTitle: "Test deck",
+    ...input
+  }, options);
+  return { root, service, sessionStore, start, user };
 }
+
+type AgentRunTestInput = Omit<
+  StartAgentRunInput,
+  "presentationId" | "presentationTitle"
+> & Partial<Pick<StartAgentRunInput, "presentationId" | "presentationTitle">>;
 
 async function readUtf8Files(root: string): Promise<Array<{ path: string; content: string }>> {
   const entries = await fs.readdir(root, { withFileTypes: true });

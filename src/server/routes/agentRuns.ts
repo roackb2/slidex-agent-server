@@ -7,8 +7,12 @@ import {
 } from "@roackb2/heddle/hosted/http-sse";
 import {
   AgentApiErrorResponseSchema,
+  AgentSessionPageSchema,
   AgentSessionStateSchema,
   AgentRunProtocol,
+  AttachAgentSessionInputSchema,
+  AttachAgentSessionResultSchema,
+  ListAgentSessionsQuerySchema,
   ResetAgentSessionResultSchema,
   StartAgentRunInputSchema,
   StartAgentRunResultSchema,
@@ -19,10 +23,19 @@ import {
   SlideXAgentRunServiceError,
   type SlideXAgentRunService
 } from "../agent/slidexAgentRunService.js";
+import {
+  SessionCatalogCursorError,
+  type SessionStore
+} from "../storage/sessionStore.js";
 
 export type AgentRunRouteDeps = {
   authService: AuthService;
   agentRunService: SlideXAgentRunService;
+};
+
+export type AgentSessionCatalogRouteDeps = {
+  authService: AuthService;
+  sessionStore: SessionStore;
 };
 
 export function createStartAgentRunHandler(deps: AgentRunRouteDeps) {
@@ -82,6 +95,35 @@ export function createGetAgentSessionHandler(deps: AgentRunRouteDeps) {
       const user = await deps.authService.requireUserFromRequest(req);
       const state = await deps.agentRunService.getSessionState(user.id, requireSessionId(req));
       res.json(AgentSessionStateSchema.parse(state));
+    } catch (error) {
+      sendRequestError(res, error);
+    }
+  };
+}
+
+export function createListAgentSessionsHandler(deps: AgentSessionCatalogRouteDeps) {
+  return async (req: Request, res: Response) => {
+    try {
+      const user = await deps.authService.requireUserFromRequest(req);
+      const query = ListAgentSessionsQuerySchema.parse(req.query);
+      const page = await deps.sessionStore.listAgentSessions(user.id, query);
+      res.json(AgentSessionPageSchema.parse(page));
+    } catch (error) {
+      sendRequestError(res, error);
+    }
+  };
+}
+
+export function createAttachAgentSessionHandler(deps: AgentRunRouteDeps) {
+  return async (req: Request, res: Response) => {
+    try {
+      const user = await deps.authService.requireUserFromRequest(req);
+      const session = await deps.agentRunService.attachSessionToPresentation(
+        user.id,
+        requireSessionId(req),
+        AttachAgentSessionInputSchema.parse(req.body)
+      );
+      res.json(AttachAgentSessionResultSchema.parse({ session }));
     } catch (error) {
       sendRequestError(res, error);
     }
@@ -190,6 +232,13 @@ function toAgentApiError(error: unknown): {
     return {
       code: "invalid_request",
       message: "The agent request was invalid",
+      status: ERROR_STATUS.invalid_request
+    };
+  }
+  if (error instanceof SessionCatalogCursorError) {
+    return {
+      code: "invalid_request",
+      message: error.message,
       status: ERROR_STATUS.invalid_request
     };
   }
