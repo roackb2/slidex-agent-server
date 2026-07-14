@@ -206,17 +206,31 @@ function isBoundSession(session: Session): session is BoundSession {
   return Boolean(session.presentationId && session.presentationTitle);
 }
 
-function compareSessionsNewestFirst(left: Session, right: Session): number {
-  return right.updatedAt.localeCompare(left.updatedAt)
-    || right.id.localeCompare(left.id);
+type SessionOrderKey = Pick<Session, "id" | "updatedAt">;
+
+function compareSessionsNewestFirst(
+  left: SessionOrderKey,
+  right: SessionOrderKey
+): number {
+  return compareTextDescending(left.updatedAt, right.updatedAt)
+    || compareTextDescending(left.id, right.id);
 }
 
 function isAfterCursor(
   session: Session,
   cursor: z.infer<typeof AgentSessionCursorSchema>
 ): boolean {
-  return session.updatedAt < cursor.lastActivityAt
-    || (session.updatedAt === cursor.lastActivityAt && session.id < cursor.id);
+  return compareSessionsNewestFirst(session, {
+    id: cursor.id,
+    updatedAt: cursor.lastActivityAt
+  }) > 0;
+}
+
+function compareTextDescending(left: string, right: string): number {
+  if (left === right) {
+    return 0;
+  }
+  return left > right ? -1 : 1;
 }
 
 function encodeCursor(session: Pick<Session, "id" | "updatedAt">): string {
