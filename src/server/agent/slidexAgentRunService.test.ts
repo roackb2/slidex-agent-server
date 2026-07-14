@@ -16,6 +16,7 @@ import type { Env } from "../env.js";
 import { SessionStore } from "../storage/sessionStore.js";
 import {
   AgentRunProtocol,
+  type Session,
   type StartAgentRunInput
 } from "../../shared/schema.js";
 import {
@@ -600,6 +601,56 @@ test("reports missing sessions with a stable product error", async () => {
   }
 });
 
+test("allows only one presentation to claim a legacy conversation concurrently", async () => {
+  const sessionStore = new ConcurrentAttachSessionStore({
+    id: "legacy-session",
+    userId: "test-user",
+    title: "Legacy conversation",
+    createdAt: "2026-07-14T00:00:00.000Z",
+    updatedAt: "2026-07-14T00:00:00.000Z",
+    latestMotionDoc: "# Legacy deck",
+    messages: []
+  });
+  const service = new SlideXAgentRunService({
+    env: {
+      NODE_ENV: "test",
+      PORT: 3000,
+      DEFAULT_MODEL: "gpt-test",
+      AGENT_DRIVER: "mock",
+      dataDir: "unused"
+    } as Env,
+    sessionStore
+  });
+
+  const outcomes = await Promise.allSettled([
+    service.attachSessionToPresentation("test-user", "legacy-session", {
+      presentationId: "presentation-1",
+      presentationTitle: "Deck one"
+    }),
+    service.attachSessionToPresentation("test-user", "legacy-session", {
+      presentationId: "presentation-2",
+      presentationTitle: "Deck two"
+    })
+  ]);
+  const fulfilled = outcomes.filter(
+    (outcome): outcome is PromiseFulfilledResult<Session> => outcome.status === "fulfilled"
+  );
+  const rejected = outcomes.filter(
+    (outcome): outcome is PromiseRejectedResult => outcome.status === "rejected"
+  );
+
+  assert.equal(fulfilled.length, 1);
+  assert.equal(rejected.length, 1);
+  assert.ok(
+    rejected[0]?.reason instanceof SlideXAgentRunServiceError
+      && rejected[0].reason.code === "invalid_request"
+  );
+  assert.equal(
+    sessionStore.current().presentationId,
+    fulfilled[0]?.value.presentationId
+  );
+});
+
 test("projects Heddle activities to the JSON-safe public client shape", () => {
   const event = AgentRunProtocol.parseEvent({
     kind: "activity",
@@ -782,4 +833,29 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+class ConcurrentAttachSessionStore extends SessionStore {
+  private session: Session;
+
+  constructor(session: Session) {
+    super("unused");
+    this.session = session;
+  }
+
+  override async getSession(userId: string, sessionId: string): Promise<Session | null> {
+    return this.session.userId === userId && this.session.id === sessionId
+      ? structuredClone(this.session)
+      : null;
+  }
+
+  override async writeSession(session: Session): Promise<Session> {
+    await Promise.resolve();
+    this.session = structuredClone(session);
+    return structuredClone(this.session);
+  }
+
+  current(): Session {
+    return structuredClone(this.session);
+  }
 }

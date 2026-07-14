@@ -25,7 +25,11 @@ This directory owns the SlideX-specific orchestration around the Heddle SDK.
   Presentation title but cannot be rebound to another Presentation ID.
   Presentation-aware catalog pagination remains in `server/storage`; the run
   service applies and validates the association when a run starts or a legacy
-  session is attached.
+  session is attached. Legacy attachment is serialized per user/session so
+  concurrent claims cannot bypass the read-check-write invariant. This lock is
+  intentionally process-local to match the current single-process JSON store;
+  horizontal scaling requires moving the invariant into an atomic shared-store
+  transaction.
 - `types.ts` and `runtime.ts` retain the legacy request-bound streaming driver
   while clients migrate to the reconnectable run protocol.
 

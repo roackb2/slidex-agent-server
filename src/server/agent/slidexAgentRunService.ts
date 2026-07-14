@@ -3,6 +3,7 @@ import type {
   ModelRunFailureCode,
   SubmitConversationTurnResult
 } from "@roackb2/heddle";
+import { Mutex } from "async-mutex";
 import {
   ConversationRunConflictError,
   ConversationRunReplayUnavailableError,
@@ -34,6 +35,11 @@ import {
 type SlideXRunAddress = {
   userId: string;
   sessionId: string;
+};
+
+type PresentationBindingLock = {
+  consumers: number;
+  mutex: Mutex;
 };
 
 type SlideXRunResult = {
@@ -155,6 +161,10 @@ export class SlideXAgentRunService {
     replay: { maxEventsPerRun: 512, retentionMs: 5 * 60_000 }
   });
   private readonly resetAddresses = new Set<string>();
+  private readonly presentationBindingLocks = new Map<
+    string,
+    PresentationBindingLock
+  >();
   private readonly createEngine: CreateEngine;
   private readonly logger: AgentRunLogger;
 
@@ -293,23 +303,25 @@ export class SlideXAgentRunService {
     sessionId: string,
     input: AttachAgentSessionInput
   ): Promise<Session> {
-    const session = await this.requireProductSession(userId, sessionId);
-    if (session.presentationId && session.presentationId !== input.presentationId) {
-      throw new SlideXAgentRunServiceError(
-        "invalid_request",
-        "Conversation belongs to a different presentation"
-      );
-    }
-    if (
-      session.presentationId === input.presentationId
-      && session.presentationTitle === input.presentationTitle
-    ) {
-      return session;
-    }
-    return this.options.sessionStore.writeSession({
-      ...session,
-      presentationId: input.presentationId,
-      presentationTitle: input.presentationTitle
+    return this.withPresentationBindingLock({ userId, sessionId }, async () => {
+      const session = await this.requireProductSession(userId, sessionId);
+      if (session.presentationId && session.presentationId !== input.presentationId) {
+        throw new SlideXAgentRunServiceError(
+          "invalid_request",
+          "Conversation belongs to a different presentation"
+        );
+      }
+      if (
+        session.presentationId === input.presentationId
+        && session.presentationTitle === input.presentationTitle
+      ) {
+        return session;
+      }
+      return this.options.sessionStore.writeSession({
+        ...session,
+        presentationId: input.presentationId,
+        presentationTitle: input.presentationTitle
+      });
     });
   }
 
@@ -579,6 +591,33 @@ export class SlideXAgentRunService {
       throw new SlideXAgentRunServiceError("run_not_found", "Agent run not found");
     }
     return run;
+  }
+
+  /**
+   * Serializes the read-check-write binding transaction for one product
+   * session. Reference counting prevents inactive session keys from
+   * accumulating for the lifetime of the process.
+   */
+  private async withPresentationBindingLock<T>(
+    address: SlideXRunAddress,
+    action: () => Promise<T>
+  ): Promise<T> {
+    const key = addressKey(address);
+    const lock = this.presentationBindingLocks.get(key) ?? {
+      consumers: 0,
+      mutex: new Mutex()
+    };
+    lock.consumers += 1;
+    this.presentationBindingLocks.set(key, lock);
+
+    try {
+      return await lock.mutex.runExclusive(action);
+    } finally {
+      lock.consumers -= 1;
+      if (lock.consumers === 0) {
+        this.presentationBindingLocks.delete(key);
+      }
+    }
   }
 }
 
