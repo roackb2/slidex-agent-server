@@ -15,20 +15,20 @@ test("catalog pagination is stable for equal timestamps and excludes unbound ses
 
   try {
     await Promise.all([
-      writeSession(root, createSession("session-b", true)),
-      writeSession(root, createSession("session-c", true)),
-      writeSession(root, createSession("session-z", false))
+      writeSession(root, createSession("session-Z-1", true)),
+      writeSession(root, createSession("session-a-2", true)),
+      writeSession(root, createSession("session-unbound", false))
     ]);
 
     const first = await store.listAgentSessions("user-1", { limit: 1 });
-    assert.deepEqual(first.items.map(({ id }) => id), ["session-c"]);
+    assert.deepEqual(first.items.map(({ id }) => id), ["session-a-2"]);
     assert.ok(first.nextCursor);
 
     const second = await store.listAgentSessions("user-1", {
       limit: 1,
       cursor: first.nextCursor
     });
-    assert.deepEqual(second.items.map(({ id }) => id), ["session-b"]);
+    assert.deepEqual(second.items.map(({ id }) => id), ["session-Z-1"]);
     assert.equal(second.nextCursor, undefined);
 
     await assert.rejects(
