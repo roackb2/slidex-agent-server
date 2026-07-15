@@ -1,4 +1,7 @@
-import { HeddleEventType } from "@roackb2/heddle";
+import {
+  ChatSessionAlreadyExistsError,
+  HeddleEventType
+} from "@roackb2/heddle";
 import type {
   ConversationActivity,
   ConversationEngineHost,
@@ -23,16 +26,18 @@ import type { AgentEmit, AgentRunResult } from "./types.js";
 // does not couple to Heddle's full engine type.
 export type ConversationEngineLike = {
   sessions: {
-    readExisting(id: string): { id: string; model?: string } | undefined;
+    readExisting(
+      id: string
+    ): Promise<{ id: string; model?: string } | undefined>;
     create(input: {
       id?: string;
       name?: string;
       model?: string;
-    }): { id: string; model?: string };
+    }): Promise<{ id: string; model?: string }>;
     updateSettings(
       id: string,
       input: { model?: string }
-    ): { id: string; model?: string };
+    ): Promise<{ id: string; model?: string }>;
   };
   turns: {
     submit(input: {
@@ -47,6 +52,11 @@ export type ConversationEngineLike = {
     current(sessionId: string): { id: string } | undefined;
     read(id: string): { content: string } | undefined;
   };
+};
+
+type ConversationSession = {
+  id: string;
+  model?: string;
 };
 
 export type RunSlideXAgentArgs = {
@@ -102,7 +112,11 @@ export async function runSlideXAgent(args: RunSlideXAgentArgs): Promise<AgentRun
 
   await emit({ type: "status", message: "Starting SlideX agent turn" });
 
-  const session = resolveConversationSession(engine, args.sessionId, args.model);
+  const session = await resolveConversationSession(
+    engine,
+    args.sessionId,
+    args.model
+  );
   const previousArtifactId = engine.artifacts.current(session.id)?.id;
 
   const host = createProgressHost(emit);
@@ -315,24 +329,50 @@ User request: ${args.message}
 Use the SlideX MotionDoc tools to fulfill the request and validate the final result. Reply with one short plain-text summary of what changed and whether validation passed. Never include MotionDoc source, fenced code, or SlideX component markup in the reply.`;
 }
 
-export function resolveConversationSession(
+export async function resolveConversationSession(
   engine: ConversationEngineLike,
   slideXSessionId: string,
   model: string
-): { id: string } {
+): Promise<{ id: string }> {
   const sessionId = `slidex-${slideXSessionId}`;
-  const existing = engine.sessions.readExisting(sessionId);
-  if (!existing) {
-    return engine.sessions.create({
+  const existing = await engine.sessions.readExisting(sessionId);
+  const session = existing ?? (
+    await createConversationSession(
+      engine,
+      sessionId,
+      slideXSessionId,
+      model
+    )
+  );
+
+  return session.model === model
+    ? session
+    : engine.sessions.updateSettings(session.id, { model });
+}
+
+async function createConversationSession(
+  engine: ConversationEngineLike,
+  sessionId: string,
+  slideXSessionId: string,
+  model: string
+): Promise<ConversationSession> {
+  try {
+    return await engine.sessions.create({
       id: sessionId,
       name: `SlideX session ${slideXSessionId}`,
       model
     });
-  }
+  } catch (error) {
+    if (!(error instanceof ChatSessionAlreadyExistsError)) {
+      throw error;
+    }
 
-  return existing.model === model
-    ? existing
-    : engine.sessions.updateSettings(existing.id, { model });
+    const concurrentSession = await engine.sessions.readExisting(sessionId);
+    if (!concurrentSession) {
+      throw error;
+    }
+    return concurrentSession;
+  }
 }
 
 export function resolveMotionDoc(

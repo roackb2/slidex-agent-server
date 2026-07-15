@@ -35,8 +35,8 @@ export async function createMockConversationEngine(
 
   return {
     sessions: {
-      readExisting: (id: string) => sessions.get(id),
-      create: (sessionInput: { id?: string; model?: string } = {}) => {
+      readExisting: async (id: string) => sessions.get(id),
+      create: async (sessionInput: { id?: string; model?: string } = {}) => {
         const session = {
           id: sessionInput.id ?? `mock-${input.sessionId}`,
           model: sessionInput.model
@@ -44,7 +44,7 @@ export async function createMockConversationEngine(
         sessions.set(session.id, session);
         return session;
       },
-      updateSettings: (id: string, settings: { model?: string }) => {
+      updateSettings: async (id: string, settings: { model?: string }) => {
         const session = { ...sessions.get(id), id, model: settings.model };
         sessions.set(id, session);
         return session;

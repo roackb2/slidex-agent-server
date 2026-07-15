@@ -202,7 +202,11 @@ export class SlideXAgentRunService {
       motionDoc: input.motionDoc,
       message: input.message
     });
-    const conversation = resolveConversationSession(engine, session.id, model);
+    const conversation = await resolveConversationSession(
+      engine,
+      session.id,
+      model
+    );
     const previousArtifactId = engine.artifacts.current(conversation.id)?.id;
 
     const lifecycle: SlideXRunLifecycleContext = {

@@ -43,6 +43,17 @@ JSON-safe shape consumed by SlideX (`type`, `text`, `tool`, and `result.ok`);
 internal engine state and traces must not cross the product API. Generic run
 behavior must be added to Heddle, not reimplemented here.
 
+Heddle v5 conversation lifecycle methods are asynchronous. This service always
+awaits session lookup, creation, and settings updates before starting a turn.
+The production driver intentionally uses Heddle's default v5 file repository:
+the stable per-user/session `stateRoot` places its revisioned catalog and
+session bodies on the durable `DATA_DIR` volume. The adapter reads the v4
+catalog/body layout and upgrades a record on its next mutation, so deployments
+must keep the same volume mounted during the package upgrade. A future database
+adapter belongs at `createConversationEngine({ sessionRepository })`; product
+Presentation/session relationships remain in SlideX storage rather than in the
+Heddle conversation record.
+
 Accepted user messages and success, cancellation, or failure terminals are
 persisted as one explainable product history. Reset marks an in-flight address
 before deleting its session so a late result cannot recreate deleted state.

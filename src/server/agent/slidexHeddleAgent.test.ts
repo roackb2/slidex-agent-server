@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { HeddleEventType } from "@roackb2/heddle";
+import {
+  ChatSessionAlreadyExistsError,
+  HeddleEventType
+} from "@roackb2/heddle";
 import type {
   ConversationActivity,
   ConversationTurnResultSummary
 } from "@roackb2/heddle";
 import type { AgentProgressEvent } from "./types.js";
 import {
+  resolveConversationSession,
   runSlideXAgent,
   type ConversationEngineLike
 } from "./slidexHeddleAgent.js";
@@ -151,6 +155,19 @@ test("reuses one Heddle session and submits only the current request", async () 
   assert.doesNotMatch(harness.submissions[1]?.prompt ?? "", /Conversation so far:/);
 });
 
+test("reuses a session created concurrently during first-turn resolution", async () => {
+  const harness = createEngineHarness({ concurrentCreateModel: "gpt-4.1" });
+
+  const session = await resolveConversationSession(
+    harness.engine,
+    "slidex-session",
+    "gpt-5.4"
+  );
+
+  assert.equal(session.id, "slidex-slidex-session");
+  assert.deepEqual(harness.updatedModels, ["gpt-5.4"]);
+});
+
 test("does not replace newer product state with a previous turn artifact", async () => {
   const harness = createEngineHarness({
     currentArtifactId: "artifact-previous",
@@ -191,6 +208,7 @@ function createEngineHarness(options: {
   unreadableArtifact?: boolean;
   assistantStreamText?: string;
   turnResult?: ConversationTurnResultSummary;
+  concurrentCreateModel?: string;
 } = {}): {
   engine: ConversationEngineLike;
   createdSessionIds: string[];
@@ -209,15 +227,19 @@ function createEngineHarness(options: {
     submissions,
     engine: {
       sessions: {
-        readExisting: (id) => sessions.get(id),
-        create: (input) => {
+        readExisting: async (id) => sessions.get(id),
+        create: async (input) => {
           const id = input.id ?? HEDDLE_SESSION_ID;
+          if (options.concurrentCreateModel) {
+            sessions.set(id, { id, model: options.concurrentCreateModel });
+            throw new ChatSessionAlreadyExistsError(id);
+          }
           const session = { id, model: input.model };
           sessions.set(id, session);
           createdSessionIds.push(id);
           return session;
         },
-        updateSettings: (id, input) => {
+        updateSettings: async (id, input) => {
           const session = sessions.get(id);
           if (!session) {
             throw new Error(`Missing test session ${id}`);

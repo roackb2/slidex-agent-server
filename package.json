@@ -18,8 +18,8 @@
     "try:anonymous-byok": "tsx scripts/tryAnonymousByok.ts"
   },
   "dependencies": {
-    "@roackb2/heddle": "4.6.0",
-    "@roackb2/heddle-remote": "4.6.0",
+    "@roackb2/heddle": "5.0.0",
+    "@roackb2/heddle-remote": "5.0.0",
     "@supabase/supabase-js": "^2.45.0",
     "@trpc/client": "^10.45.2",
     "@trpc/server": "^10.45.2",

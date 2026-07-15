@@ -741,13 +741,16 @@ function createEngine(
 
   return {
     sessions: {
-      readExisting: (id: string) => sessions.get(id),
-      create: (input: CreateConversationSessionInput = {}) => {
+      readExisting: async (id: string) => sessions.get(id),
+      create: async (input: CreateConversationSessionInput = {}) => {
         const session = { id: input.id ?? "test-session", model: input.model };
         sessions.set(session.id, session);
         return session;
       },
-      updateSettings: (id: string, input: UpdateConversationSessionSettingsInput) => {
+      updateSettings: async (
+        id: string,
+        input: UpdateConversationSessionSettingsInput
+      ) => {
         const session = { ...sessions.get(id), id, model: input.model };
         sessions.set(id, session);
         return session;
