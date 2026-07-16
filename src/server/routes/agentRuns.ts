@@ -25,8 +25,8 @@ import {
 } from "../agent/slidexAgentRunService.js";
 import {
   SessionCatalogCursorError,
-  type SessionStore
-} from "../storage/sessionStore.js";
+  type AgentSessionRepository
+} from "../storage/agentSessionRepository.js";
 
 export type AgentRunRouteDeps = {
   authService: AuthService;
@@ -35,7 +35,7 @@ export type AgentRunRouteDeps = {
 
 export type AgentSessionCatalogRouteDeps = {
   authService: AuthService;
-  sessionStore: SessionStore;
+  agentSessionRepository: AgentSessionRepository;
 };
 
 export function createStartAgentRunHandler(deps: AgentRunRouteDeps) {
@@ -106,7 +106,7 @@ export function createListAgentSessionsHandler(deps: AgentSessionCatalogRouteDep
     try {
       const user = await deps.authService.requireUserFromRequest(req);
       const query = ListAgentSessionsQuerySchema.parse(req.query);
-      const page = await deps.sessionStore.listAgentSessions(user.id, query);
+      const page = await deps.agentSessionRepository.listAgentSessions(user.id, query);
       res.json(AgentSessionPageSchema.parse(page));
     } catch (error) {
       sendRequestError(res, error);

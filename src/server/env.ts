@@ -10,7 +10,10 @@ const EnvSchema = z.object({
   SUPABASE_URL: z.string().url().optional(),
   SUPABASE_ANON_KEY: z.string().min(1).optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
+  // Runtime/model memory and the product-visible transcript are separate
+  // durability records, so deployments select each repository explicitly.
   HEDDLE_SESSION_STORAGE: z.enum(["file", "supabase"]).default("file"),
+  SLIDEX_PRODUCT_SESSION_STORAGE: z.enum(["file", "supabase"]).default("file"),
   CORS_ORIGIN: z.string().optional(),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).optional(),
   SHUTDOWN_GRACE_MS: z.coerce.number().int().positive().max(120_000).default(30_000),
@@ -47,19 +50,25 @@ const EnvSchema = z.object({
       message: issue
     });
   }
-  if (env.HEDDLE_SESSION_STORAGE === "supabase") {
+  if (
+    env.HEDDLE_SESSION_STORAGE === "supabase"
+    || env.SLIDEX_PRODUCT_SESSION_STORAGE === "supabase"
+  ) {
+    const selector = env.HEDDLE_SESSION_STORAGE === "supabase"
+      ? "HEDDLE_SESSION_STORAGE"
+      : "SLIDEX_PRODUCT_SESSION_STORAGE";
     if (!env.SUPABASE_URL) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["SUPABASE_URL"],
-        message: "SUPABASE_URL is required when HEDDLE_SESSION_STORAGE=supabase"
+        message: `SUPABASE_URL is required when ${selector}=supabase`
       });
     }
     if (!env.SUPABASE_SERVICE_ROLE_KEY) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["SUPABASE_SERVICE_ROLE_KEY"],
-        message: "SUPABASE_SERVICE_ROLE_KEY is required when HEDDLE_SESSION_STORAGE=supabase"
+        message: `SUPABASE_SERVICE_ROLE_KEY is required when ${selector}=supabase`
       });
     }
   }

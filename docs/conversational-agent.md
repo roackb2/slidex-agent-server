@@ -32,10 +32,11 @@ shows the agent when it was built with
 `NEXT_PUBLIC_SLIDEX_AGENT_ENABLED=true`; the server only registers the
 reconnectable routes when it starts with `SLIDEX_AGENT_ENABLED=true`.
 
-The current implementation is a single-process, single-replica MVP. Product
-session and Heddle conversation state are durable on `DATA_DIR`; active-run
-coordination and event replay are process-local. Do not present the current
-deployment as horizontally scalable or serverless-safe.
+Completed product history and Heddle conversation state can use either file
+storage under `DATA_DIR` or independent server-only Supabase adapters. Configure
+both adapters for completed-conversation continuity across replicas. Active-run
+coordination and event replay remain process-local, so losing an in-flight run
+when its process disappears is an accepted MVP behavior.
 
 ## System map
 
@@ -47,7 +48,7 @@ flowchart LR
     RUN["Heddle hosted run service\nrun, cancel, ordered replay"]
     CORE["Heddle conversation engine\nhistory, model loop, artifacts"]
     MCP["MotionDoc MCP\nstateless deck operations"]
-    DATA["Persistent DATA_DIR\nproduct JSON + Heddle state"]
+    DATA["Selectable durable storage\nDATA_DIR or Supabase"]
 
     UI -->|"bearer token + prompt + current MotionDoc\nsource revision + tab-memory model key"| API
     UI -->|"restore or create identity"| AUTH
@@ -85,8 +86,9 @@ flowchart LR
 8. The editor applies a non-stale result through its existing `commitSource`
    path. If the user edited the deck after run start, the result stays pending
    instead of silently overwriting the newer source.
-9. The server persists the user-facing messages and latest MotionDoc. Heddle
-   persists model-facing conversation history and artifacts separately.
+9. The server persists the safe user-facing terminal transcript. The canonical
+   deck is saved independently in `presentations.source`; Heddle persists
+   model-facing conversation history and artifacts separately.
 
 ## Ownership boundaries
 
@@ -110,14 +112,15 @@ user-facing product projection.
 |---|---|---|
 | Product user | Supabase user ID from a bearer token | Anonymous auth is the MVP identity. The Supabase browser session may survive refresh. |
 | Editor project | Stable project instance ID in `sessionStorage` | Tab-scoped; independent of mutable project names; new/imported decks rotate it. |
-| Product conversation | SlideX `sessionId` | JSON under `DATA_DIR/sessions/<user>/`; contains visible chat and latest MotionDoc. |
-| Model conversation | Deterministic Heddle session under `DATA_DIR/heddle/` | Contains model-facing history and artifacts; one durable conversation per SlideX product session. |
+| Product conversation | SlideX `sessionId` | File JSON under `DATA_DIR/sessions/<user>/` or Supabase `agent_sessions` plus `agent_session_messages`; contains the browser-safe transcript and Presentation association. |
+| Model conversation | Deterministic Heddle session | File state under `DATA_DIR/heddle/` or Supabase `agent_session_records`; contains model-facing history and one durable conversation per SlideX product session. |
 | Active run and replay | In-process `ConversationRunService` | One active run per user/session; up to 512 events retained for five minutes. Lost on process restart. |
 | Model credential | Agent-panel React state and the live run-start request | Forgotten on refresh or **Forget key**. Never persisted, logged, traced, emitted, or placed in URLs/cookies/analytics. |
-| Current deck | Editor source, request MotionDoc, product-session snapshot, and accepted Heddle artifact | The request source is authoritative because the user may edit manually between turns. |
+| Current deck | Editor source, request MotionDoc, canonical `presentations.source`, and accepted Heddle artifact | The request source is authoritative at run start because the user may edit manually between turns; Supabase product-history hydration reads the canonical Presentation rather than duplicating deck source in message rows. |
 
-Supabase is identity only. It is not currently the database for decks,
-conversations, or active runs.
+Supabase owns identity and can own completed deck, product-transcript, and
+Heddle-runtime persistence. It does not own active runs, live SSE subscribers,
+or short replay in this MVP.
 
 ## Public interfaces
 
@@ -287,7 +290,7 @@ There is deliberately no editor model-key environment variable.
 
 ### Server
 
-Run one long-lived Node.js 20 process with at least:
+Run a long-lived Node.js 20 process with at least:
 
 ```bash
 NODE_ENV=production
@@ -298,6 +301,9 @@ DATA_DIR=/data
 CORS_ORIGIN=https://editor.example.com
 SUPABASE_URL=https://<project>.supabase.co
 SUPABASE_ANON_KEY=<server-configured-anon-key>
+SUPABASE_SERVICE_ROLE_KEY=<server-only-service-role-key>
+SLIDEX_PRODUCT_SESSION_STORAGE=supabase
+HEDDLE_SESSION_STORAGE=supabase
 DEFAULT_MODEL=<tested-model>
 HEDDLE_WORKSPACE_ROOT=/app
 MOTIONDOC_MCP_COMMAND=<installed-command>
@@ -307,21 +313,25 @@ LOG_LEVEL=info
 SHUTDOWN_GRACE_MS=30000
 ```
 
-Attach a persistent volume at `DATA_DIR` (Railway defaults to `/data`). The
-volume must contain both product JSON and Heddle state. An ephemeral filesystem
-will make conversation and deck history disappear on redeploy.
+With both storage selectors set to `supabase`, completed browser-visible chat,
+completed model-facing history, and the canonical Presentation source survive
+process replacement and can be hydrated by any replica. `DATA_DIR` is still
+required for file mode and may also contain runtime artifacts, traces, and the
+MotionDoc MCP workspace. Mount a persistent volume whenever those files must
+survive a deploy.
 
-Keep the deployment at one replica. Local JSON files have no cross-process
-coordination, and active-run ownership/replay lives in memory. Multiple replicas
-can split start, subscribe, cancel, and hydrate requests across incompatible
-process state. Move product sessions and run coordination to shared durable
-services before horizontal scaling.
+Active-run ownership, SSE replay, and cancellation remain process-local.
+Multiple replicas therefore support completed-conversation continuity, but an
+in-flight run needs routing affinity so start, subscribe, and cancel reach the
+owning process. Losing an in-flight stream during a restart is accepted; the
+last completed transcript and model conversation remain durable.
 
 The reverse proxy must support long-lived SSE: disable response buffering,
 avoid transforming event frames, forward `Last-Event-ID`, and set idle/request
 timeouts above the longest supported agent turn. A rolling deploy should allow
 at least `SHUTDOWN_GRACE_MS` for drain. Restarting a process ends active replay
-even though completed conversation history remains on the volume.
+even though completed conversation history remains in the selected durable
+repositories.
 
 ### MotionDoc MCP packaging gap
 
@@ -407,7 +417,7 @@ validation result, and pass/fail for each turn.
 | `Failed to fetch` | Confirm the server is listening on the URL embedded in the editor, the browser origin is in `CORS_ORIGIN`, and HTTPS pages are not calling an HTTP API. |
 | Stuck on **Working** or **Thinking** | Inspect the run by `runId`, server terminal logs, SSE proxy buffering/timeouts, provider credential/quota state, and MCP subprocess output. |
 | Key is empty after refresh | Expected: BYOK is current-tab memory only. Re-enter it. |
-| Conversation or deck disappears after deploy | Confirm a persistent `DATA_DIR` volume is mounted and the request reached the same single replica. |
+| Conversation or deck disappears after deploy | Confirm both Supabase selectors are enabled, the service-role credential can access `agent_sessions`, `agent_session_messages`, `agent_session_records`, and the append RPC, and the canonical `presentations.source` was saved. In file mode, confirm a persistent `DATA_DIR` volume is mounted. |
 | `replay_unavailable` | The in-process replay window expired or the process restarted. Hydrate durable session history; do not invent missing progress. |
 | MCP preparation fails | Verify the configured command, arguments, working directory, installed artifact, Node version, and filesystem permissions inside the service environment. |
 | Completed result does not overwrite the deck | Check validation and source-revision conflict state. A failed validation or manual edit intentionally prevents silent replacement. |
@@ -449,9 +459,10 @@ The implementation:
 
 Do not create empty sessions when the list opens, expose Heddle's internal
 session list, replay product chat into model prompts, or add a thin service that
-only forwards `SessionStore`. Keep local JSON for this slice; migrate to a
-shared database when deployment durability, querying, or multi-replica needs
-justify it.
+only forwards the storage implementation. `AgentSessionRepository` is the
+product-owned boundary: `SessionStore` implements its file mode and
+`SupabaseAgentSessionRepository` implements its shared-database mode. Repository
+selection is explicit and never dual-writes or silently falls back.
 
 Acceptance for the slice:
 
@@ -466,11 +477,14 @@ Acceptance for the slice:
 7. Prove switching never races an active run and cross-Presentation selection
    navigates to the target canonical Presentation.
 
-The current Railway MVP keeps product sessions in atomic JSON files on one
-persistent volume. Supabase supplies product identity only. Before scaling to
-multiple replicas, replace `SessionStore` behind the same public contract with
-the agreed database repository; do not run JSON and Postgres as competing
-production sources of truth.
+For cross-replica completed-conversation continuity, select Supabase for both
+the product transcript (`SLIDEX_PRODUCT_SESSION_STORAGE=supabase`) and Heddle's
+model-facing conversation (`HEDDLE_SESSION_STORAGE=supabase`). The product
+adapter persists `agent_sessions` plus `agent_session_messages`; Heddle persists
+the complete runtime record in `agent_session_records`. Active run/SSE state is
+still process-local, so a reconnect after process loss hydrates the last
+completed conversation instead of pretending that missing live progress was
+replayed.
 
 ## Code reading order
 
@@ -480,7 +494,9 @@ For a server change, start with:
 2. `src/server/app.ts` and `src/server/routes/agentRuns.ts`;
 3. `src/server/agent/slidexAgentRunService.ts`;
 4. `src/server/agent/slidexHeddleAgent.ts` and `slidexExtension.ts`;
-5. `src/server/storage/sessionStore.ts`, `env.ts`, and nearby tests.
+5. `src/server/storage/agentSessionRepository.ts`,
+   `supabaseAgentSessionRepository.ts`, `sessionStore.ts`, `env.ts`, and nearby
+   tests.
 
 For an editor change, start with `features/pitch/README.md`, then read the
 protocol/client/identity/persistence modules before `usePitchAgent.ts` and

@@ -33,7 +33,33 @@ test("rejects URLs that are not browser origins", () => {
 });
 
 test("keeps file-backed Heddle sessions as the default", () => {
-  assert.equal(loadEnv({ NODE_ENV: "test" }).HEDDLE_SESSION_STORAGE, "file");
+  const env = loadEnv({ NODE_ENV: "test" });
+  assert.equal(env.HEDDLE_SESSION_STORAGE, "file");
+  assert.equal(env.SLIDEX_PRODUCT_SESSION_STORAGE, "file");
+});
+
+test("requires trusted server credentials for Supabase product conversations", () => {
+  assert.throws(
+    () => loadEnv({
+      NODE_ENV: "test",
+      SLIDEX_PRODUCT_SESSION_STORAGE: "supabase"
+    }),
+    /SUPABASE_URL is required/
+  );
+  assert.throws(
+    () => loadEnv({
+      NODE_ENV: "test",
+      SLIDEX_PRODUCT_SESSION_STORAGE: "supabase",
+      SUPABASE_URL: "https://example.supabase.co"
+    }),
+    /SUPABASE_SERVICE_ROLE_KEY is required/
+  );
+  assert.equal(loadEnv({
+    NODE_ENV: "test",
+    SLIDEX_PRODUCT_SESSION_STORAGE: "supabase",
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "service-role-key"
+  }).SLIDEX_PRODUCT_SESSION_STORAGE, "supabase");
 });
 
 test("requires trusted server credentials for Supabase Heddle sessions", () => {

@@ -8,10 +8,10 @@ It includes:
 - Express SSE route at `POST /api/agent/stream`.
 - Zod validation for API inputs and persisted sessions.
 - Supabase Auth token verification.
-- Local JSON session storage for Railway persistent volumes.
-- An opt-in, server-only Supabase adapter for complete Heddle conversation
-  records, guarded behind an explicit storage setting while its schema is
-  prepared.
+- File or server-only Supabase storage for SlideX's browser-visible conversation
+  catalog and durable transcript.
+- An independent file or Supabase adapter for complete Heddle conversation
+  records.
 - A bounded, presentation-aware conversation catalog for restoring durable
   work in the SlideX editor.
 - Heddle adapter that creates a per-request engine with the user's own LLM key while reusing one durable Heddle conversation per SlideX session.
@@ -104,6 +104,7 @@ SLIDEX_AGENT_ENABLED=true
 DEFAULT_MODEL=gpt-5.4
 SUPABASE_URL=http://127.0.0.1:54321
 SUPABASE_ANON_KEY=<ANON_KEY from supabase status>
+SLIDEX_PRODUCT_SESSION_STORAGE=file
 HEDDLE_SESSION_STORAGE=file
 HEDDLE_WORKSPACE_ROOT=/absolute/path/to/SlideX
 MOTIONDOC_MCP_COMMAND=npm
@@ -216,6 +217,15 @@ MOTIONDOC_MCP_CWD=/app
 
 The SlideX conversational agent is built in this repo (`src/server/agent/slidexHeddleAgent.ts`), driven by `src/server/agent/heddleDriver.ts`. The driver prepares the SlideX MCP once as a **self-contained Heddle host extension**, then builds a fresh, user-scoped conversation engine per request and delegates the turn to the agent module. The deterministic internal session ID makes those engines reuse one durable Heddle conversation. Heddle v5 owns the asynchronous, revision-safe conversation catalog plus model-facing history, leases, and compaction; the server's `Session.messages` remains the user-facing chat projection and is not replayed into model prompts.
 
+`SLIDEX_PRODUCT_SESSION_STORAGE=file` keeps the browser-visible conversation
+catalog and transcript under `DATA_DIR/sessions`. Set it to `supabase` only
+after the `agent_sessions`, `agent_session_messages`, and `presentations`
+tables plus the `append_agent_session_message` RPC are installed. The adapter
+creates the catalog parent before accepting a run, commits the user message
+before returning `202`, appends one idempotent terminal per run, scopes every
+service-role operation to the verified user, and reads the current deck from
+canonical `presentations.source`.
+
 `HEDDLE_SESSION_STORAGE=file` remains the deployment default. Existing v4 file
 sessions are read in place and upgraded on their next mutation, so the Railway
 `DATA_DIR` volume must remain mounted across the package upgrade. A prepared
@@ -225,6 +235,16 @@ sessions are read in place and upgraded on their next mutation, so the Railway
 atomic expected revisions for updates and deletes. Do not enable it until the
 `agent_session_records` migration and live acceptance have passed. Selection
 is a clean cutover: the server does not dual-write or silently fall back.
+
+For completed conversation continuity across replicas, configure both
+`SLIDEX_PRODUCT_SESSION_STORAGE=supabase` and
+`HEDDLE_SESSION_STORAGE=supabase`. The first preserves what the user sees; the
+second preserves the model-facing Heddle memory. They are intentionally
+separate so neither public product history nor opaque runtime state becomes an
+accidental projection of the other. Active execution, cancellation, SSE, and
+short replay remain process-local; a disconnect may be resumed only while the
+owning process retains the run, but refresh after completion hydrates the
+durable transcript and deck.
 
 The extension uses Heddle mirror result-artifact rules for MotionDoc-writing tools. Each updated MotionDoc is persisted and set as the current session artifact while its full `source` remains inline for the next stateless MCP edit. The agent reads a newly mirrored artifact after the turn; if no new artifact was produced, it preserves the request's authoritative MotionDoc so a read-only turn cannot restore stale deck state.
 
@@ -246,9 +266,10 @@ visible assistant message is source-free and capped at 240 characters. Raw
 model-authored assistant streams are not exposed before this terminal boundary.
 
 Heddle's `stateRoot` is created per user/session under `DATA_DIR/heddle`, so
-traces and artifacts remain on that volume. In file session-storage mode, the
-conversation catalog and bodies do too; Supabase mode replaces only Heddle's
-session repository.
+traces and artifacts remain on that volume. In file Heddle-storage mode, the
+runtime conversation catalog and bodies do too; Supabase Heddle mode replaces
+only that repository. SlideX product-conversation storage is selected
+independently with `SLIDEX_PRODUCT_SESSION_STORAGE`.
 
 ## Observability
 
@@ -283,6 +304,9 @@ NODE_ENV=production
 AGENT_DRIVER=heddle
 SUPABASE_URL=...
 SUPABASE_ANON_KEY=...
+SUPABASE_SERVICE_ROLE_KEY=...
+SLIDEX_PRODUCT_SESSION_STORAGE=supabase
+HEDDLE_SESSION_STORAGE=supabase
 VITE_SUPABASE_URL=...
 VITE_SUPABASE_ANON_KEY=...
 DEFAULT_MODEL=gpt-4.1

@@ -21,7 +21,10 @@ import type {
 } from "../../shared/schema.js";
 import type { AuthUser } from "../auth.js";
 import type { Env } from "../env.js";
-import { makeMessage, type SessionStore } from "../storage/sessionStore.js";
+import {
+  AgentSessionPresentationConflictError,
+  type AgentSessionRepository
+} from "../storage/agentSessionRepository.js";
 import { createSlideXConversationEngine } from "./heddleDriver.js";
 import { createMockConversationEngine } from "./mockConversationEngine.js";
 import { createChatSessionRepositoryResolver } from "./supabaseChatSessionRepository.js";
@@ -134,7 +137,7 @@ const MODEL_FAILURE_ERROR_BY_CODE = new Map<
 
 export type SlideXAgentRunServiceOptions = {
   env: Env;
-  sessionStore: SessionStore;
+  agentSessionRepository: AgentSessionRepository;
   createEngine?: CreateEngine;
   logger?: AgentRunLogger;
 };
@@ -320,24 +323,25 @@ export class SlideXAgentRunService {
     input: AttachAgentSessionInput
   ): Promise<Session> {
     return this.withPresentationBindingLock({ userId, sessionId }, async () => {
-      const session = await this.requireProductSession(userId, sessionId);
-      if (session.presentationId && session.presentationId !== input.presentationId) {
-        throw new SlideXAgentRunServiceError(
-          "invalid_request",
-          "Conversation belongs to a different presentation"
+      try {
+        const session = await this.options.agentSessionRepository.attachSessionToPresentation(
+          userId,
+          sessionId,
+          input
         );
-      }
-      if (
-        session.presentationId === input.presentationId
-        && session.presentationTitle === input.presentationTitle
-      ) {
+        if (!session) {
+          throw new SlideXAgentRunServiceError("session_not_found", "Conversation not found");
+        }
         return session;
+      } catch (error) {
+        if (error instanceof AgentSessionPresentationConflictError) {
+          throw new SlideXAgentRunServiceError(
+            "invalid_request",
+            "Conversation belongs to a different presentation"
+          );
+        }
+        throw error;
       }
-      return this.options.sessionStore.writeSession({
-        ...session,
-        presentationId: input.presentationId,
-        presentationTitle: input.presentationTitle
-      });
     });
   }
 
@@ -356,7 +360,7 @@ export class SlideXAgentRunService {
     }
 
     try {
-      await this.options.sessionStore.deleteSession(userId, sessionId);
+      await this.options.agentSessionRepository.deleteSession(userId, sessionId);
       this.logger.info({
         event: "agent_session.reset",
         sessionId,
@@ -393,7 +397,7 @@ export class SlideXAgentRunService {
         presentationTitle: input.presentationTitle
       });
     }
-    return this.options.sessionStore.createSession({
+    return this.options.agentSessionRepository.createSession({
       userId,
       title: titleFromMessage(input.message),
       motionDoc: input.motionDoc,
@@ -403,25 +407,31 @@ export class SlideXAgentRunService {
   }
 
   private async requireProductSession(userId: string, sessionId: string): Promise<Session> {
-    const session = await this.options.sessionStore.getSession(userId, sessionId);
+    const session = await this.options.agentSessionRepository.getSession(userId, sessionId);
     if (!session) {
       throw new SlideXAgentRunServiceError("session_not_found", "Conversation not found");
     }
     return session;
   }
 
-  private persistAcceptedMessage(
+  private async persistAcceptedMessage(
     session: Session,
     input: { message: string; motionDoc: string },
     runId: string
   ): Promise<Session> {
-    session.latestMotionDoc = input.motionDoc;
-    session.messages.push(makeMessage({
+    const persisted = await this.options.agentSessionRepository.appendRunMessage({
+      userId: session.userId,
+      sessionId: session.id,
+      runId,
+      kind: "user_input",
       role: "user",
       content: input.message,
-      metadata: { runId }
-    }));
-    return this.options.sessionStore.writeSession(session);
+      latestMotionDoc: input.motionDoc
+    });
+    if (!persisted) {
+      throw new SlideXAgentRunServiceError("session_not_found", "Conversation not found");
+    }
+    return persisted;
   }
 
   private handleRunAccepted(
@@ -474,19 +484,22 @@ export class SlideXAgentRunService {
         initialMotionDoc: lifecycle.initialMotionDoc,
         result: turnResult
       });
-      currentSession.latestMotionDoc = motionDoc;
-      currentSession.messages.push(
-        makeMessage({
-          role: "assistant",
-          content: assistantMessage,
-          metadata: {
-            outcome: turnResult.outcome,
-            runId: runContext.runId,
-            toolCalls: turnResult.toolResults.length
-          }
-        })
-      );
-      const persistedSession = await this.options.sessionStore.writeSession(currentSession);
+      const persistedSession = await this.options.agentSessionRepository.appendRunMessage({
+        userId: currentSession.userId,
+        sessionId: currentSession.id,
+        runId: runContext.runId,
+        kind: "assistant_terminal",
+        role: "assistant",
+        content: assistantMessage,
+        metadata: {
+          outcome: turnResult.outcome,
+          toolCalls: turnResult.toolResults.length
+        },
+        latestMotionDoc: motionDoc
+      });
+      if (!persistedSession) {
+        throw new SlideXAgentResultFinalizationError();
+      }
       this.logger.info({
         event: "agent_run.terminal",
         runId: runContext.runId,
@@ -584,18 +597,23 @@ export class SlideXAgentRunService {
     }
 
     const session = await input.acceptedSession;
-    session.messages.push(makeMessage({
+    const persisted = await this.options.agentSessionRepository.appendRunMessage({
+      userId: session.userId,
+      sessionId: session.id,
+      runId: input.runId,
+      kind: "assistant_terminal",
       role: "assistant",
       content: input.cancelled
         ? "Run cancelled."
         : input.publicError?.message ?? RUN_FAILED.message,
       metadata: {
         outcome: input.cancelled ? "cancelled" : "error",
-        runId: input.runId,
         ...(input.publicError ? { errorCode: input.publicError.code } : {})
       }
-    }));
-    await this.options.sessionStore.writeSession(session);
+    });
+    if (!persisted) {
+      throw new SlideXAgentResultFinalizationError();
+    }
   }
 
   private requireOwnedRun(

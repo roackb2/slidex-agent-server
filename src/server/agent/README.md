@@ -30,10 +30,9 @@ This directory owns the SlideX-specific orchestration around the Heddle SDK.
   Presentation-aware catalog pagination remains in `server/storage`; the run
   service applies and validates the association when a run starts or a legacy
   session is attached. Legacy attachment is serialized per user/session so
-  concurrent claims cannot bypass the read-check-write invariant. This lock is
-  intentionally process-local to match the current single-process JSON store;
-  horizontal scaling requires moving the invariant into an atomic shared-store
-  transaction.
+  concurrent file-backed claims cannot bypass the read-check-write invariant.
+  Supabase conversations are created with their immutable Presentation parent
+  and do not depend on this process-local legacy lock.
 - `types.ts` and `runtime.ts` retain the legacy request-bound streaming driver
   while clients migrate to the reconnectable run protocol.
 
@@ -49,6 +48,15 @@ behavior must be added to Heddle, not reimplemented here.
 
 Heddle v5 conversation lifecycle methods are asynchronous. This service always
 awaits session lookup, creation, and settings updates before starting a turn.
+
+`SLIDEX_PRODUCT_SESSION_STORAGE=file` is the default browser-visible product
+history adapter. `SLIDEX_PRODUCT_SESSION_STORAGE=supabase` switches that
+projection to `agent_sessions`, `agent_session_messages`, and
+`append_agent_session_message`, while hydrating the current deck from
+`presentations.source`. The accepted user message must commit before `202` is
+returned; one idempotent terminal is then persisted for success, cancellation,
+or failure. Every service-role operation remains scoped to the verified user.
+
 `HEDDLE_SESSION_STORAGE=file` is the safe default: the stable per-user/session
 `stateRoot` places the revisioned catalog and session bodies on the durable
 `DATA_DIR` volume. The file adapter reads the v4 catalog/body layout and
@@ -63,6 +71,12 @@ active until the `agent_session_records` migration, constraints, indexes,
 grants, and live adapter acceptance have passed in the target project. Product
 Presentation/session relationships and visible chat projection remain in
 SlideX storage rather than in the Heddle conversation record.
+
+Use both Supabase selectors for cross-replica completed-conversation
+continuity. Product storage restores the safe transcript; Heddle storage
+restores model-facing memory. Active execution, cancellation, SSE, and short
+replay remain process-local, so an in-flight run may be lost with its process
+even though previously committed input and completed turns survive.
 
 Accepted user messages and success, cancellation, or failure terminals are
 persisted as one explainable product history. Reset marks an in-flight address

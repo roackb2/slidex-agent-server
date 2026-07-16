@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { nanoid } from "nanoid";
-import { z } from "zod";
 import {
   ChatMessageSchema,
   SessionSchema,
@@ -10,25 +10,24 @@ import {
   type Session,
   type SessionSummary
 } from "../../shared/schema.js";
-
-const AgentSessionCursorSchema = z.object({
-  id: z.string().min(1),
-  lastActivityAt: z.string().datetime()
-}).strict();
+import {
+  AgentSessionIdempotencyConflictError,
+  AgentSessionPresentationConflictError,
+  compareAgentSessionsNewestFirst,
+  decodeAgentSessionCursor,
+  encodeAgentSessionCursor,
+  isAgentSessionAfterCursor,
+  type AgentSessionRepository,
+  type AppendAgentSessionMessageInput,
+  type CreateAgentSessionInput
+} from "./agentSessionRepository.js";
 
 type BoundSession = Session & {
   presentationId: string;
   presentationTitle: string;
 };
 
-export class SessionCatalogCursorError extends Error {
-  constructor() {
-    super("Conversation catalog cursor is invalid");
-    this.name = "SessionCatalogCursorError";
-  }
-}
-
-export class SessionStore {
+export class SessionStore implements AgentSessionRepository {
   constructor(private readonly rootDir: string) {}
 
   async ensureReady(): Promise<void> {
@@ -59,11 +58,17 @@ export class SessionStore {
     userId: string,
     input: { limit: number; cursor?: string }
   ): Promise<AgentSessionPage> {
-    const cursor = input.cursor ? decodeCursor(input.cursor) : undefined;
+    const cursor = input.cursor ? decodeAgentSessionCursor(input.cursor) : undefined;
     const sessions = (await this.readUserSessions(userId))
       .filter(isBoundSession)
-      .sort(compareSessionsNewestFirst)
-      .filter((session) => !cursor || isAfterCursor(session, cursor));
+      .sort((left, right) => compareAgentSessionsNewestFirst(
+        { id: left.id, lastActivityAt: left.updatedAt },
+        { id: right.id, lastActivityAt: right.updatedAt }
+      ))
+      .filter((session) => !cursor || isAgentSessionAfterCursor(
+        { id: session.id, lastActivityAt: session.updatedAt },
+        cursor
+      ));
     const page = sessions.slice(0, input.limit + 1);
     const visible = page.slice(0, input.limit);
     const last = visible.at(-1);
@@ -81,18 +86,15 @@ export class SessionStore {
         messageCount: session.messages.length
       })),
       ...(page.length > input.limit && last
-        ? { nextCursor: encodeCursor(last) }
+        ? { nextCursor: encodeAgentSessionCursor({
+            id: last.id,
+            lastActivityAt: last.updatedAt
+          }) }
         : {})
     };
   }
 
-  async createSession(input: {
-    userId: string;
-    title?: string;
-    motionDoc?: string;
-    presentationId?: string;
-    presentationTitle?: string;
-  }): Promise<Session> {
+  async createSession(input: CreateAgentSessionInput): Promise<Session> {
     const now = new Date().toISOString();
     const session: Session = {
       id: nanoid(),
@@ -153,6 +155,72 @@ export class SessionStore {
     return this.writeSession(session);
   }
 
+  async attachSessionToPresentation(
+    userId: string,
+    sessionId: string,
+    input: { presentationId: string; presentationTitle: string }
+  ): Promise<Session | null> {
+    const session = await this.getSession(userId, sessionId);
+    if (!session) {
+      return null;
+    }
+    if (session.presentationId && session.presentationId !== input.presentationId) {
+      throw new AgentSessionPresentationConflictError();
+    }
+    if (
+      session.presentationId === input.presentationId
+      && session.presentationTitle === input.presentationTitle
+    ) {
+      return session;
+    }
+    return this.writeSession({
+      ...session,
+      presentationId: input.presentationId,
+      presentationTitle: input.presentationTitle
+    });
+  }
+
+  async appendRunMessage(input: AppendAgentSessionMessageInput): Promise<Session | null> {
+    const session = await this.getSession(input.userId, input.sessionId);
+    if (!session) {
+      return null;
+    }
+
+    const metadata = {
+      ...(input.metadata ?? {}),
+      runId: input.runId,
+      kind: input.kind
+    };
+    const existing = session.messages.find((message) =>
+      message.metadata?.runId === input.runId
+      && message.metadata.kind === input.kind
+    );
+    if (existing) {
+      if (
+        existing.role === input.role
+        && existing.content === input.content
+        && isDeepStrictEqual(existing.metadata, metadata)
+      ) {
+        return session;
+      }
+      throw new AgentSessionIdempotencyConflictError(
+        input.sessionId,
+        input.runId,
+        input.kind
+      );
+    }
+
+    if (input.latestMotionDoc !== undefined) {
+      session.latestMotionDoc = input.latestMotionDoc;
+    }
+    session.messages.push(makeMessage({
+      role: input.role,
+      content: input.content,
+      metadata
+    }));
+    return this.writeSession(session);
+  }
+
   async renameSession(userId: string, sessionId: string, title: string): Promise<Session> {
     const session = await this.requireSession(userId, sessionId);
     session.title = title;
@@ -204,50 +272,6 @@ export class SessionStore {
 
 function isBoundSession(session: Session): session is BoundSession {
   return Boolean(session.presentationId && session.presentationTitle);
-}
-
-type SessionOrderKey = Pick<Session, "id" | "updatedAt">;
-
-function compareSessionsNewestFirst(
-  left: SessionOrderKey,
-  right: SessionOrderKey
-): number {
-  return compareTextDescending(left.updatedAt, right.updatedAt)
-    || compareTextDescending(left.id, right.id);
-}
-
-function isAfterCursor(
-  session: Session,
-  cursor: z.infer<typeof AgentSessionCursorSchema>
-): boolean {
-  return compareSessionsNewestFirst(session, {
-    id: cursor.id,
-    updatedAt: cursor.lastActivityAt
-  }) > 0;
-}
-
-function compareTextDescending(left: string, right: string): number {
-  if (left === right) {
-    return 0;
-  }
-  return left > right ? -1 : 1;
-}
-
-function encodeCursor(session: Pick<Session, "id" | "updatedAt">): string {
-  return Buffer.from(JSON.stringify({
-    id: session.id,
-    lastActivityAt: session.updatedAt
-  })).toString("base64url");
-}
-
-function decodeCursor(value: string): z.infer<typeof AgentSessionCursorSchema> {
-  try {
-    return AgentSessionCursorSchema.parse(
-      JSON.parse(Buffer.from(value, "base64url").toString("utf8"))
-    );
-  } catch {
-    throw new SessionCatalogCursorError();
-  }
 }
 
 export function makeMessage(input: Omit<ChatMessage, "id" | "createdAt">): ChatMessage {

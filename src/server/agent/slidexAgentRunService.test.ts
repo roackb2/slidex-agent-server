@@ -132,7 +132,7 @@ test("runs the deterministic mock through the same reconnectable lifecycle", asy
       AGENT_DRIVER: "mock",
       dataDir: root
     } as Env,
-    sessionStore
+    agentSessionRepository: sessionStore
   });
 
   try {
@@ -529,7 +529,7 @@ test("keeps result persistence failures distinct without exposing storage detail
       sourceRevision: "revision-1",
       llmApiKey: "test-api-key"
     });
-    fixture.sessionStore.writeSession = async () => {
+    fixture.sessionStore.appendRunMessage = async () => {
       throw new Error("sensitive storage failure detail");
     };
     turn.resolve();
@@ -619,7 +619,7 @@ test("allows only one presentation to claim a legacy conversation concurrently",
       AGENT_DRIVER: "mock",
       dataDir: "unused"
     } as Env,
-    sessionStore
+    agentSessionRepository: sessionStore
   });
 
   const outcomes = await Promise.allSettled([
@@ -701,7 +701,7 @@ async function createFixture(
       AGENT_DRIVER: "heddle",
       dataDir: root
     } as Env,
-    sessionStore,
+    agentSessionRepository: sessionStore,
     createEngine: createEngineFactory ?? (async () => engine),
     logger
   });
