@@ -480,6 +480,7 @@ test("returns stable 404, 409, 400, and sanitized 500 errors", async () => {
         message: "Update it",
         motionDoc: "# Deck",
         sourceRevision: "revision-1",
+        presentationSourceRevision: 7,
         llmApiKey: "test-api-key"
       })
     });
@@ -660,6 +661,7 @@ function requestAgentRun(
     body: JSON.stringify({
       presentationId: "presentation-1",
       presentationTitle: "Test deck",
+      presentationSourceRevision: 7,
       ...input
     } satisfies StartAgentRunInput)
   });
@@ -667,8 +669,11 @@ function requestAgentRun(
 
 type AgentRunTestInput = Omit<
   StartAgentRunInput,
-  "presentationId" | "presentationTitle"
-> & Partial<Pick<StartAgentRunInput, "presentationId" | "presentationTitle">>;
+  "presentationId" | "presentationTitle" | "presentationSourceRevision"
+> & Partial<Pick<
+  StartAgentRunInput,
+  "presentationId" | "presentationTitle" | "presentationSourceRevision"
+>>;
 
 async function subscribeAgentRun(
   baseUrl: string,

@@ -99,6 +99,13 @@ persisted and returned: source-like model output is replaced wholesale, never
 partially scrubbed, and source-free copy is capped for the narrow agent panel.
 Raw `assistant.stream` text is withheld from product activity events until this
 terminal projection has run; status and tool activity remain visible.
+In Supabase product mode, the run service then commits a changed source through
+`PresentationDocumentRepository` before appending or publishing terminal
+success. `presentationSourceRevision` is the database CAS revision;
+`sourceRevision` remains the editor-source fingerprint used for local stale
+result protection. An unchanged result skips the database write, a real CAS
+conflict becomes `presentation_conflict`, and file product mode persists an
+explicit `pending` deck-finalization status with the terminal and MotionDoc.
 The route layer maps the service's stable product errors to HTTP status codes
 and sanitizes unknown failures. Structured lifecycle logs contain only stable
 correlation, outcome, and safe product error-code facts; prompts, MotionDoc

@@ -14,6 +14,8 @@ It includes:
   records.
 - A bounded, presentation-aware conversation catalog for restoring durable
   work in the SlideX editor.
+- Server-owned expected-revision finalization of changed canonical
+  Presentations before terminal success in Supabase product mode.
 - Heddle adapter that creates a per-request engine with the user's own LLM key while reusing one durable Heddle conversation per SlideX session.
 - MotionDoc MCP stdio subprocess manager.
 - React chat panel served by the same Express app in production.
@@ -220,11 +222,15 @@ The SlideX conversational agent is built in this repo (`src/server/agent/slidexH
 `SLIDEX_PRODUCT_SESSION_STORAGE=file` keeps the browser-visible conversation
 catalog and transcript under `DATA_DIR/sessions`. Set it to `supabase` only
 after the `agent_sessions`, `agent_session_messages`, and `presentations`
-tables plus the `append_agent_session_message` RPC are installed. The adapter
+tables plus the `append_agent_session_message` and
+`mcp_compare_and_swap_presentation_document` RPCs are installed. The adapter
 creates the catalog parent before accepting a run, commits the user message
 before returning `202`, appends one idempotent terminal per run, scopes every
 service-role operation to the verified user, and reads the current deck from
-canonical `presentations.source`.
+canonical `presentations.source`. A validated changed deck is committed through
+the service-role Presentation CAS before that success terminal is appended or
+published. Read-only turns do not increment the source revision; file product
+mode stores an explicit durable pending result for browser reconciliation.
 
 `HEDDLE_SESSION_STORAGE=file` remains the deployment default. Existing v4 file
 sessions are read in place and upgraded on their next mutation, so the Railway
@@ -264,6 +270,10 @@ Successful chat terminals use a SlideX-owned result projection. Changed decks
 must include a passing validation result for the exact final MotionDoc, and the
 visible assistant message is source-free and capped at 240 characters. Raw
 model-authored assistant streams are not exposed before this terminal boundary.
+The run-start request carries both an editor-source fingerprint and the numeric
+Presentation revision. A newer manual edit produces `presentation_conflict`
+instead of being overwritten; an equivalent intervening autosave may be retried
+once at its newer revision.
 
 Heddle's `stateRoot` is created per user/session under `DATA_DIR/heddle`, so
 traces and artifacts remain on that volume. In file Heddle-storage mode, the

@@ -16,6 +16,12 @@ Two implementations share this contract:
   allocation and catalog-count repair, and `presentations.source` as the
   canonical current deck.
 
+`PresentationDocumentRepository` is the separate canonical-deck write port.
+`SupabasePresentationDocumentRepository` commits a validated changed MotionDoc
+through `mcp_compare_and_swap_presentation_document` before a success terminal
+can be persisted or published. The service-role RPC keeps the write scoped to
+the verified user and preserves Presentation title and template metadata.
+
 The server resolves this boundary once from
 `SLIDEX_PRODUCT_SESSION_STORAGE`. Selection is a clean cutover: there is no
 dual-write, merge, or silent fallback between file and Supabase storage.
@@ -30,6 +36,14 @@ dual-write, merge, or silent fallback between file and Supabase storage.
 - The accepted user message commits before the run-start route returns `202`.
   Success, cancellation, and failure each append exactly one explainable
   assistant terminal.
+- In Supabase product mode, a changed validated deck commits through the
+  Presentation expected-revision boundary before its success terminal. A
+  conflict becomes an explainable error terminal and never overwrites a newer
+  source. One retry is allowed only when an intervening editor autosave wrote
+  the exact source accepted at run start.
+- An unchanged/read-only result does not increment `presentations.source_revision`.
+  File product mode atomically stores the terminal plus `latestMotionDoc` as an
+  explicit durable pending result for the editor to reconcile.
 - Message identity is `(session, user, run, lifecycle kind)`. An exact retry
   returns the existing message; a retry with changed content or metadata is a
   conflict rather than a second row.
@@ -48,8 +62,8 @@ This directory does not own:
   traces, or artifacts;
 - process-local active-run coordination, cancellation, SSE, or short replay;
 - HTTP authentication, CORS, or public error projection; or
-- writes to canonical `presentations.source`, which remain in SlideX's editor
-  save/compare-and-swap path.
+- editor undo/redo, local stale-result protection, or the Presentation schema
+  and RPC definitions owned by the SlideX editor repository.
 
 Heddle runtime persistence is selected independently with
 `HEDDLE_SESSION_STORAGE`. Cross-replica completed-conversation continuity
