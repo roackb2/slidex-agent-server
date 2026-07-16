@@ -25,14 +25,22 @@ import type { Env } from "../env.js";
 const SLIDEX_SERVER_ID = "slidex";
 const EXTENSION_ID = "presentation-workspace";
 
+// Keep this aligned with local MCP tools that return a changed MotionDoc at
+// `structuredContent.result.source`. Read-only and export tools do not belong
+// here; remote presentation tools use their own persisted/CAS boundary.
 const MOTIONDOC_WRITER_TOOLS = [
   "slidex_create_deck",
   "slidex_create_from_template",
   "slidex_replace_slide",
   "slidex_update_slide_props",
   "slidex_add_block",
+  "slidex_update_block",
+  "slidex_delete_block",
+  "slidex_duplicate_block",
+  "slidex_reorder_block",
   "slidex_delete_slide",
   "slidex_reorder_slide",
+  "slidex_apply_shader_preset",
   "slidex_create_slide_from_layout",
   "slidex_add_slide_from_layout",
   "slidex_replace_slide_with_layout"

@@ -27,8 +27,13 @@ test("declares mirror capture for every MotionDoc-writing tool", () => {
       "slidex_replace_slide",
       "slidex_update_slide_props",
       "slidex_add_block",
+      "slidex_update_block",
+      "slidex_delete_block",
+      "slidex_duplicate_block",
+      "slidex_reorder_block",
       "slidex_delete_slide",
       "slidex_reorder_slide",
+      "slidex_apply_shader_preset",
       "slidex_create_slide_from_layout",
       "slidex_add_slide_from_layout",
       "slidex_replace_slide_with_layout"
