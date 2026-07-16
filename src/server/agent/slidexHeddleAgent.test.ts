@@ -145,11 +145,11 @@ test("reuses one Heddle session and submits only the current request", async () 
     emit: () => undefined
   });
 
-  assert.deepEqual(harness.createdSessionIds, ["slidex-slidex-session"]);
+  assert.deepEqual(harness.createdSessionIds, ["slidex-session"]);
   assert.deepEqual(harness.updatedModels, ["gpt-4.1"]);
   assert.deepEqual(
     harness.submissions.map((submission) => submission.sessionId),
-    ["slidex-slidex-session", "slidex-slidex-session"]
+    ["slidex-session", "slidex-session"]
   );
   assert.equal(countOccurrences(harness.submissions[1]?.prompt ?? "", "Add a conclusion in the same tone"), 1);
   assert.doesNotMatch(harness.submissions[1]?.prompt ?? "", /Conversation so far:/);
@@ -164,7 +164,7 @@ test("reuses a session created concurrently during first-turn resolution", async
     "gpt-5.4"
   );
 
-  assert.equal(session.id, "slidex-slidex-session");
+  assert.equal(session.id, "slidex-session");
   assert.deepEqual(harness.updatedModels, ["gpt-5.4"]);
 });
 

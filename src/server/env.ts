@@ -9,6 +9,8 @@ const EnvSchema = z.object({
   RAILWAY_VOLUME_MOUNT_PATH: z.string().optional(),
   SUPABASE_URL: z.string().url().optional(),
   SUPABASE_ANON_KEY: z.string().min(1).optional(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
+  HEDDLE_SESSION_STORAGE: z.enum(["file", "supabase"]).default("file"),
   CORS_ORIGIN: z.string().optional(),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).optional(),
   SHUTDOWN_GRACE_MS: z.coerce.number().int().positive().max(120_000).default(30_000),
@@ -44,6 +46,22 @@ const EnvSchema = z.object({
       path: ["CORS_ORIGIN"],
       message: issue
     });
+  }
+  if (env.HEDDLE_SESSION_STORAGE === "supabase") {
+    if (!env.SUPABASE_URL) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["SUPABASE_URL"],
+        message: "SUPABASE_URL is required when HEDDLE_SESSION_STORAGE=supabase"
+      });
+    }
+    if (!env.SUPABASE_SERVICE_ROLE_KEY) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["SUPABASE_SERVICE_ROLE_KEY"],
+        message: "SUPABASE_SERVICE_ROLE_KEY is required when HEDDLE_SESSION_STORAGE=supabase"
+      });
+    }
   }
 });
 

@@ -9,6 +9,9 @@ It includes:
 - Zod validation for API inputs and persisted sessions.
 - Supabase Auth token verification.
 - Local JSON session storage for Railway persistent volumes.
+- An opt-in, server-only Supabase adapter for complete Heddle conversation
+  records, guarded behind an explicit storage setting while its schema is
+  prepared.
 - A bounded, presentation-aware conversation catalog for restoring durable
   work in the SlideX editor.
 - Heddle adapter that creates a per-request engine with the user's own LLM key while reusing one durable Heddle conversation per SlideX session.
@@ -101,6 +104,7 @@ SLIDEX_AGENT_ENABLED=true
 DEFAULT_MODEL=gpt-5.4
 SUPABASE_URL=http://127.0.0.1:54321
 SUPABASE_ANON_KEY=<ANON_KEY from supabase status>
+HEDDLE_SESSION_STORAGE=file
 HEDDLE_WORKSPACE_ROOT=/absolute/path/to/SlideX
 MOTIONDOC_MCP_COMMAND=npm
 MOTIONDOC_MCP_ARGS='["run","mcp"]'
@@ -210,7 +214,17 @@ MOTIONDOC_MCP_ARGS='["/app/path/to/motiondoc-mcp.js"]'
 MOTIONDOC_MCP_CWD=/app
 ```
 
-The SlideX conversational agent is built in this repo (`src/server/agent/slidexHeddleAgent.ts`), driven by `src/server/agent/heddleDriver.ts`. The driver prepares the SlideX MCP once as a **self-contained Heddle host extension**, then builds a fresh, user-scoped conversation engine per request and delegates the turn to the agent module. The stable per-user/session `stateRoot` and deterministic internal session ID make those engines reuse one durable Heddle conversation. Heddle v5 owns the asynchronous, revision-safe conversation catalog plus model-facing history, leases, and compaction; the server's `Session.messages` remains the user-facing chat projection and is not replayed into model prompts. Existing v4 file sessions are read in place and upgraded on their next mutation, so the Railway `DATA_DIR` volume must remain mounted across the package upgrade.
+The SlideX conversational agent is built in this repo (`src/server/agent/slidexHeddleAgent.ts`), driven by `src/server/agent/heddleDriver.ts`. The driver prepares the SlideX MCP once as a **self-contained Heddle host extension**, then builds a fresh, user-scoped conversation engine per request and delegates the turn to the agent module. The deterministic internal session ID makes those engines reuse one durable Heddle conversation. Heddle v5 owns the asynchronous, revision-safe conversation catalog plus model-facing history, leases, and compaction; the server's `Session.messages` remains the user-facing chat projection and is not replayed into model prompts.
+
+`HEDDLE_SESSION_STORAGE=file` remains the deployment default. Existing v4 file
+sessions are read in place and upgraded on their next mutation, so the Railway
+`DATA_DIR` volume must remain mounted across the package upgrade. A prepared
+`HEDDLE_SESSION_STORAGE=supabase` mode injects the server-owned
+`SupabaseChatSessionRepository` into Heddle. It requires `SUPABASE_URL` plus
+`SUPABASE_SERVICE_ROLE_KEY`, scopes every query to the verified user, and uses
+atomic expected revisions for updates and deletes. Do not enable it until the
+`agent_session_records` migration and live acceptance have passed. Selection
+is a clean cutover: the server does not dual-write or silently fall back.
 
 The extension uses Heddle mirror result-artifact rules for MotionDoc-writing tools. Each updated MotionDoc is persisted and set as the current session artifact while its full `source` remains inline for the next stateless MCP edit. The agent reads a newly mirrored artifact after the turn; if no new artifact was produced, it preserves the request's authoritative MotionDoc so a read-only turn cannot restore stale deck state.
 
@@ -231,7 +245,10 @@ must include a passing validation result for the exact final MotionDoc, and the
 visible assistant message is source-free and capped at 240 characters. Raw
 model-authored assistant streams are not exposed before this terminal boundary.
 
-Heddle's `stateRoot` is created per user/session under `DATA_DIR/heddle`, so its local state also lands on the Railway volume.
+Heddle's `stateRoot` is created per user/session under `DATA_DIR/heddle`, so
+traces and artifacts remain on that volume. In file session-storage mode, the
+conversation catalog and bodies do too; Supabase mode replaces only Heddle's
+session repository.
 
 ## Observability
 

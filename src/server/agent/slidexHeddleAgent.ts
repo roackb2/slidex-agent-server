@@ -334,8 +334,13 @@ export async function resolveConversationSession(
   slideXSessionId: string,
   model: string
 ): Promise<{ id: string }> {
-  const sessionId = `slidex-${slideXSessionId}`;
-  const existing = await engine.sessions.readExisting(sessionId);
+  // Keep new Heddle records aligned with the product session primary key so a
+  // remote repository can enforce its composite session/user foreign key.
+  // The prefixed lookup preserves conversations created by the file backend.
+  const sessionId = slideXSessionId;
+  const legacySessionId = `slidex-${slideXSessionId}`;
+  const existing = await engine.sessions.readExisting(sessionId)
+    ?? await engine.sessions.readExisting(legacySessionId);
   const session = existing ?? (
     await createConversationSession(
       engine,

@@ -32,6 +32,34 @@ test("rejects URLs that are not browser origins", () => {
   );
 });
 
+test("keeps file-backed Heddle sessions as the default", () => {
+  assert.equal(loadEnv({ NODE_ENV: "test" }).HEDDLE_SESSION_STORAGE, "file");
+});
+
+test("requires trusted server credentials for Supabase Heddle sessions", () => {
+  assert.throws(
+    () => loadEnv({
+      NODE_ENV: "test",
+      HEDDLE_SESSION_STORAGE: "supabase"
+    }),
+    /SUPABASE_URL is required/
+  );
+  assert.throws(
+    () => loadEnv({
+      NODE_ENV: "test",
+      HEDDLE_SESSION_STORAGE: "supabase",
+      SUPABASE_URL: "https://example.supabase.co"
+    }),
+    /SUPABASE_SERVICE_ROLE_KEY is required/
+  );
+  assert.equal(loadEnv({
+    NODE_ENV: "test",
+    HEDDLE_SESSION_STORAGE: "supabase",
+    SUPABASE_URL: "https://example.supabase.co",
+    SUPABASE_SERVICE_ROLE_KEY: "service-role-key"
+  }).HEDDLE_SESSION_STORAGE, "supabase");
+});
+
 function productionAgentEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return {
     NODE_ENV: "production",

@@ -3,6 +3,10 @@
 This directory owns the SlideX-specific orchestration around the Heddle SDK.
 
 - `heddleDriver.ts` constructs a user-scoped Heddle conversation engine.
+- `supabaseChatSessionRepository.ts` implements Heddle's revisioned session
+  repository contract against the server-only `agent_session_records` table.
+  Each repository instance is scoped to one verified SlideX user, and every
+  service-role query retains that explicit `user_id` predicate.
 - `mockConversationEngine.ts` adapts the existing deterministic mock driver to
   the same engine/run-service path. Mock mode changes execution only; it must
   still exercise Heddle run identity, replay, cancellation, product history,
@@ -45,14 +49,20 @@ behavior must be added to Heddle, not reimplemented here.
 
 Heddle v5 conversation lifecycle methods are asynchronous. This service always
 awaits session lookup, creation, and settings updates before starting a turn.
-The production driver intentionally uses Heddle's default v5 file repository:
-the stable per-user/session `stateRoot` places its revisioned catalog and
-session bodies on the durable `DATA_DIR` volume. The adapter reads the v4
-catalog/body layout and upgrades a record on its next mutation, so deployments
-must keep the same volume mounted during the package upgrade. A future database
-adapter belongs at `createConversationEngine({ sessionRepository })`; product
-Presentation/session relationships remain in SlideX storage rather than in the
-Heddle conversation record.
+`HEDDLE_SESSION_STORAGE=file` is the safe default: the stable per-user/session
+`stateRoot` places the revisioned catalog and session bodies on the durable
+`DATA_DIR` volume. The file adapter reads the v4 catalog/body layout and
+upgrades a record on its next mutation, so deployments must keep the same
+volume mounted during the package upgrade.
+
+`HEDDLE_SESSION_STORAGE=supabase` injects a
+`SupabaseChatSessionRepository` into `createConversationEngine`. This mode is
+an explicit cutover, not dual-write or fallback behavior. Startup also requires
+`SUPABASE_URL` and the server-only `SUPABASE_SERVICE_ROLE_KEY`. Keep file mode
+active until the `agent_session_records` migration, constraints, indexes,
+grants, and live adapter acceptance have passed in the target project. Product
+Presentation/session relationships and visible chat projection remain in
+SlideX storage rather than in the Heddle conversation record.
 
 Accepted user messages and success, cancellation, or failure terminals are
 persisted as one explainable product history. Reset marks an in-flight address

@@ -94,6 +94,7 @@ function createTestEnv(): Env {
     NODE_ENV: "test",
     PORT: 3000,
     AGENT_DRIVER: "mock",
+    HEDDLE_SESSION_STORAGE: "file",
     SLIDEX_AGENT_ENABLED: false,
     DEFAULT_MODEL: "gpt-test",
     LOG_LEVEL: "info",

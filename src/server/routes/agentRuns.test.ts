@@ -603,6 +603,7 @@ async function withMockAgentApp(
     NODE_ENV: options.nodeEnv ?? "test",
     PORT: 3000,
     AGENT_DRIVER: "mock",
+    HEDDLE_SESSION_STORAGE: "file",
     SLIDEX_AGENT_ENABLED: options.enabled,
     DEFAULT_MODEL: "gpt-test",
     CORS_ORIGIN: options.corsOrigin ?? (

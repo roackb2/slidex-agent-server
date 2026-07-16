@@ -24,6 +24,7 @@ import type { Env } from "../env.js";
 import { makeMessage, type SessionStore } from "../storage/sessionStore.js";
 import { createSlideXConversationEngine } from "./heddleDriver.js";
 import { createMockConversationEngine } from "./mockConversationEngine.js";
+import { createChatSessionRepositoryResolver } from "./supabaseChatSessionRepository.js";
 import {
   buildPrompt,
   createSlideXApprovalHost,
@@ -170,10 +171,21 @@ export class SlideXAgentRunService {
 
   constructor(private readonly options: SlideXAgentRunServiceOptions) {
     this.logger = options.logger ?? NOOP_LOGGER;
-    this.createEngine = options.createEngine
-      ?? (options.env.AGENT_DRIVER === "mock"
-        ? createMockConversationEngine
-        : createSlideXConversationEngine);
+    if (options.createEngine) {
+      this.createEngine = options.createEngine;
+      return;
+    }
+    if (options.env.AGENT_DRIVER === "mock") {
+      this.createEngine = createMockConversationEngine;
+      return;
+    }
+
+    const resolveSessionRepository = createChatSessionRepositoryResolver(options.env);
+    this.createEngine = (env, input) => createSlideXConversationEngine(
+      env,
+      input,
+      { sessionRepository: resolveSessionRepository(input.user.id) }
+    );
   }
 
   async start(
