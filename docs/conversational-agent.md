@@ -50,7 +50,7 @@ flowchart LR
     MCP["MotionDoc MCP\nstateless deck operations"]
     DATA["Selectable durable storage\nDATA_DIR or Supabase"]
 
-    UI -->|"bearer token + prompt + current MotionDoc\nsource revision + tab-memory model key"| API
+    UI -->|"bearer token + prompt + persistence-safe MotionDoc\neditor fingerprint + Presentation revision + tab-memory model key"| API
     UI -->|"restore or create identity"| AUTH
     API -->|"verify bearer token"| AUTH
     API --> RUN
@@ -68,8 +68,9 @@ flowchart LR
 
 1. The editor obtains a Supabase access token for product identity. This token
    is separate from the user's model credential.
-2. The editor starts a run with the current MotionDoc, a source revision, the
-   prompt, and the OpenAI key held in current-tab React memory.
+2. The editor starts a run with a persistence-safe copy of the current
+   MotionDoc, its editor-source fingerprint, the numeric canonical Presentation
+   revision, the prompt, and the OpenAI key held in current-tab React memory.
 3. The server authenticates the user, resolves or creates the user's product
    session, persists the accepted user message, and starts a Heddle run.
 4. Heddle reuses the durable conversation for that product session, owns the
@@ -80,15 +81,21 @@ flowchart LR
 6. The SlideX server projects the generic turn into a product result. A changed
    deck is accepted only when the exact final source passed MotionDoc
    validation. The visible assistant summary is source-free and bounded.
-7. Heddle publishes ordered activity and one terminal over SSE. Heddle Remote
+7. In Supabase product mode, the server commits a changed final source through
+   the user-scoped Presentation CAS. A read-only result skips the write. A newer
+   manual edit produces a recoverable conflict; only an equivalent intervening
+   autosave may be retried once.
+8. The server persists the safe user-facing terminal transcript after the deck
+   commit. File product mode instead persists the terminal and MotionDoc as an
+   explicit durable pending result.
+9. Heddle publishes ordered activity and one terminal over SSE. Heddle Remote
    owns cursor, duplicate, gap, retry, and terminal-consumption policy in the
    browser.
-8. The editor applies a non-stale result through its existing `commitSource`
+10. The editor applies a non-stale result through its existing `commitSource`
    path. If the user edited the deck after run start, the result stays pending
-   instead of silently overwriting the newer source.
-9. The server persists the safe user-facing terminal transcript. The canonical
-   deck is saved independently in `presentations.source`; Heddle persists
-   model-facing conversation history and artifacts separately.
+   instead of silently overwriting the newer source. In Supabase mode, its
+   existing save coordinator acknowledges the already committed remote source.
+   Heddle persists model-facing conversation history and artifacts separately.
 
 ## Ownership boundaries
 
@@ -145,9 +152,12 @@ Run-start body:
 {
   "sessionId": "optional-existing-session-id",
   "title": "Optional display title",
+  "presentationId": "canonical-presentation-id",
+  "presentationTitle": "Current deck title",
   "message": "Make the opening slide more visual",
   "motionDoc": "<current MotionDoc source>",
   "sourceRevision": "stable-editor-source-revision",
+  "presentationSourceRevision": 7,
   "llmApiKey": "<user-provided key>",
   "model": "optional-model-name"
 }
@@ -167,8 +177,10 @@ Failures use a stable JSON envelope:
 Request-level codes are `auth_required`, `invalid_request`,
 `session_not_found`, `run_not_found`, `active_run_conflict`,
 `replay_unavailable`, and `internal_error`. Model credential, quota,
-validation, and run failures are sanitized terminal events rather than raw
-provider errors.
+validation, Presentation conflict/finalization, completion-record, and run
+failures are sanitized terminal events rather than raw provider errors. An
+exact terminal whose append response was lost is recovered by run identity;
+an ambiguous post-save failure tells the client to refresh before retrying.
 
 The existing `POST /api/agent/stream` and tRPC session procedures predate the
 editor's reconnectable lifecycle. Maintain compatibility, but put new editor

@@ -7,12 +7,14 @@ import { StdioMcpProcessManager } from "./mcp/stdioMcp.js";
 import { createServerLogger } from "./observability/logger.js";
 import { SessionStore } from "./storage/sessionStore.js";
 import { createAgentSessionRepository } from "./storage/supabaseAgentSessionRepository.js";
+import { createPresentationDocumentRepository } from "./storage/supabasePresentationDocumentRepository.js";
 
 const env = loadEnv();
 const logger = createServerLogger(env);
 const sessionStore = new SessionStore(env.dataDir);
 await sessionStore.ensureReady();
 const agentSessionRepository = createAgentSessionRepository(env, sessionStore);
+const presentationDocumentRepository = createPresentationDocumentRepository(env);
 
 const authService = new AuthService(env);
 const mcpManager = new StdioMcpProcessManager(env);
@@ -21,6 +23,7 @@ const app = createApp({
   authService,
   sessionStore,
   agentSessionRepository,
+  presentationDocumentRepository,
   mcpManager,
   logger
 });
@@ -33,7 +36,10 @@ const server = app.listen(env.PORT, () => {
     port: boundPort,
     dataDir: env.dataDir,
     agentDriver: env.AGENT_DRIVER,
-    productSessionStorage: env.SLIDEX_PRODUCT_SESSION_STORAGE
+    productSessionStorage: env.SLIDEX_PRODUCT_SESSION_STORAGE,
+    presentationFinalization: presentationDocumentRepository
+      ? "supabase"
+      : "pending"
   }, "SlideX agent server listening");
 });
 

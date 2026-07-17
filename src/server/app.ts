@@ -43,6 +43,9 @@ export function createApp(deps: ServerDeps & Pick<AgentStreamDeps, "mcpManager">
       agentDriver: deps.env.AGENT_DRIVER,
       dataDir: deps.env.dataDir,
       productSessionStorage: deps.env.SLIDEX_PRODUCT_SESSION_STORAGE,
+      presentationFinalization: deps.presentationDocumentRepository
+        ? "supabase"
+        : "pending",
       mcpConfigured: deps.mcpManager.configured
     });
   });
@@ -60,6 +63,7 @@ export function createApp(deps: ServerDeps & Pick<AgentStreamDeps, "mcpManager">
     const agentRunService = new SlideXAgentRunService({
       env: deps.env,
       agentSessionRepository,
+      presentationDocumentRepository: deps.presentationDocumentRepository,
       logger: logger.child({ component: "agent-run-service" })
     });
     const agentRunRouteDeps = {

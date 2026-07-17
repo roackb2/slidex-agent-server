@@ -4,6 +4,9 @@ import type { Logger } from "pino";
 import type { AuthService, AuthUser } from "./auth.js";
 import type { Env } from "./env.js";
 import type { AgentSessionRepository } from "./storage/agentSessionRepository.js";
+import type {
+  PresentationDocumentRepository
+} from "./storage/presentationDocumentRepository.js";
 import type { SessionStore } from "./storage/sessionStore.js";
 
 export type ServerDeps = {
@@ -11,6 +14,7 @@ export type ServerDeps = {
   authService: AuthService;
   sessionStore: SessionStore;
   agentSessionRepository?: AgentSessionRepository;
+  presentationDocumentRepository?: PresentationDocumentRepository;
   logger?: Logger;
 };
 

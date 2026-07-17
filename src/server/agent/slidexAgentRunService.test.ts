@@ -15,6 +15,10 @@ import type { AuthUser } from "../auth.js";
 import type { Env } from "../env.js";
 import { SessionStore } from "../storage/sessionStore.js";
 import {
+  PresentationDocumentConflictError,
+  type PresentationDocumentRepository
+} from "../storage/presentationDocumentRepository.js";
+import {
   AgentRunProtocol,
   type Session,
   type StartAgentRunInput
@@ -49,6 +53,7 @@ test("streams a reconnectable run and persists the completed SlideX session", as
     assert.match(complete.timestamp, /^\d{4}-\d{2}-\d{2}T/);
     assert.equal(complete.result.motionDoc, "# Updated deck");
     assert.equal(complete.result.baseSourceRevision, "revision-1");
+    assert.equal(complete.result.presentationSourceRevision, undefined);
     assert.deepEqual(
       complete.result.session.messages.map(({ role }) => role),
       ["user", "assistant"]
@@ -57,6 +62,10 @@ test("streams a reconnectable run and persists the completed SlideX session", as
       AgentRunProtocol.parseEvent(JSON.parse(AgentRunProtocol.stringifyEvent(complete))),
       complete
     );
+    assert.equal(
+      complete.result.session.messages.at(-1)?.metadata?.deckFinalization,
+      "pending"
+    );
 
     const replay = await collect(fixture.service.subscribe({
       userId: fixture.user.id,
@@ -64,6 +73,242 @@ test("streams a reconnectable run and persists the completed SlideX session", as
       afterSequence: complete.sequence - 1
     }));
     assert.deepEqual(replay.map(({ kind }) => kind), ["result"]);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("commits a changed Presentation before publishing terminal success", async () => {
+  const order: string[] = [];
+  const presentationDocumentRepository: PresentationDocumentRepository = {
+    commitAgentResult: async (input) => {
+      order.push("presentation");
+      assert.deepEqual(input, {
+        userId: "test-user",
+        presentationId: "presentation-1",
+        expectedSourceRevision: 7,
+        baseSource: "# Original deck",
+        nextSource: "# Updated deck"
+      });
+      return {
+        sourceRevision: 8,
+        updatedAt: "2026-07-17T00:00:00.000Z"
+      };
+    }
+  };
+  const fixture = await createFixture(
+    createEngine(),
+    undefined,
+    undefined,
+    presentationDocumentRepository
+  );
+  const appendRunMessage = fixture.sessionStore.appendRunMessage.bind(fixture.sessionStore);
+  fixture.sessionStore.appendRunMessage = async (input) => {
+    if (input.kind === "assistant_terminal") {
+      order.push("terminal");
+    }
+    return appendRunMessage(input);
+  };
+
+  try {
+    const accepted = await fixture.start({
+      message: "Update it",
+      motionDoc: "# Original deck",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key"
+    });
+    const events = await collect(fixture.service.subscribe({
+      userId: fixture.user.id,
+      runId: accepted.runId
+    }));
+    const terminal = events.at(-1);
+
+    assert.ok(terminal && terminal.kind === "result");
+    assert.deepEqual(order, ["presentation", "terminal"]);
+    assert.equal(terminal.result.presentationSourceRevision, 8);
+    assert.equal(
+      terminal.result.session.messages.at(-1)?.metadata?.deckFinalization,
+      "saved"
+    );
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("recovers an exact terminal whose append response was lost after commit", async () => {
+  const fixture = await createFixture(
+    createEngine(),
+    undefined,
+    undefined,
+    {
+      commitAgentResult: async () => ({
+        sourceRevision: 8,
+        updatedAt: "2026-07-17T00:00:00.000Z"
+      })
+    }
+  );
+  const appendRunMessage = fixture.sessionStore.appendRunMessage.bind(fixture.sessionStore);
+  fixture.sessionStore.appendRunMessage = async (input) => {
+    const persisted = await appendRunMessage(input);
+    if (input.kind === "assistant_terminal") {
+      throw new Error("response lost after commit");
+    }
+    return persisted;
+  };
+
+  try {
+    const accepted = await fixture.start({
+      message: "Update it",
+      motionDoc: "# Original deck",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key"
+    });
+    const events = await collect(fixture.service.subscribe({
+      userId: fixture.user.id,
+      runId: accepted.runId
+    }));
+    const terminal = events.at(-1);
+
+    assert.ok(terminal && terminal.kind === "result");
+    assert.equal(terminal.result.presentationSourceRevision, 8);
+    assert.equal(
+      terminal.result.session.messages.filter((message) => (
+        message.metadata?.runId === accepted.runId
+        && message.metadata.kind === "assistant_terminal"
+      )).length,
+      1
+    );
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("reports a missing completion record truthfully after the deck was saved", async () => {
+  let deckCommits = 0;
+  const fixture = await createFixture(
+    createEngine(),
+    undefined,
+    undefined,
+    {
+      commitAgentResult: async () => {
+        deckCommits += 1;
+        return {
+          sourceRevision: 8,
+          updatedAt: "2026-07-17T00:00:00.000Z"
+        };
+      }
+    }
+  );
+  const appendRunMessage = fixture.sessionStore.appendRunMessage.bind(fixture.sessionStore);
+  fixture.sessionStore.appendRunMessage = async (input) => {
+    if (input.kind === "assistant_terminal") {
+      throw new Error("terminal storage unavailable");
+    }
+    return appendRunMessage(input);
+  };
+
+  try {
+    const accepted = await fixture.start({
+      message: "Update it",
+      motionDoc: "# Original deck",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key"
+    });
+    const events = await collect(fixture.service.subscribe({
+      userId: fixture.user.id,
+      runId: accepted.runId
+    }));
+    const terminal = events.at(-1);
+
+    assert.equal(deckCommits, 1);
+    assert.ok(terminal && terminal.kind === "error");
+    assert.deepEqual(terminal.error, {
+      code: "completion_record_failed",
+      message: "The presentation is current, but the conversation completion could not be recorded. Refresh before sending another request."
+    });
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("publishes a recoverable conflict without claiming the deck was saved", async () => {
+  const fixture = await createFixture(
+    createEngine(),
+    undefined,
+    undefined,
+    {
+      commitAgentResult: async () => {
+        throw new PresentationDocumentConflictError();
+      }
+    }
+  );
+
+  try {
+    const accepted = await fixture.start({
+      message: "Update it",
+      motionDoc: "# Original deck",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key"
+    });
+    const events = await collect(fixture.service.subscribe({
+      userId: fixture.user.id,
+      runId: accepted.runId
+    }));
+    const terminal = events.at(-1);
+
+    assert.ok(terminal && terminal.kind === "error");
+    assert.deepEqual(terminal.error, {
+      code: "presentation_conflict",
+      message: "The presentation changed while the agent was working. Review the current deck and try again."
+    });
+    const state = await fixture.service.getSessionState(
+      fixture.user.id,
+      accepted.session.id
+    );
+    assert.equal(
+      state.session.messages.at(-1)?.metadata?.errorCode,
+      "presentation_conflict"
+    );
+    assert.equal(state.session.latestMotionDoc, "# Original deck");
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("does not increment the Presentation revision for an unchanged result", async () => {
+  let commits = 0;
+  const fixture = await createFixture(
+    createEngine(),
+    undefined,
+    undefined,
+    {
+      commitAgentResult: async () => {
+        commits += 1;
+        throw new Error("unchanged results must not be committed");
+      }
+    }
+  );
+
+  try {
+    const accepted = await fixture.start({
+      message: "Read it",
+      motionDoc: "# Updated deck",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key"
+    });
+    const events = await collect(fixture.service.subscribe({
+      userId: fixture.user.id,
+      runId: accepted.runId
+    }));
+    const terminal = events.at(-1);
+
+    assert.ok(terminal && terminal.kind === "result");
+    assert.equal(commits, 0);
+    assert.equal(terminal.result.presentationSourceRevision, 7);
+    assert.equal(
+      terminal.result.session.messages.at(-1)?.metadata?.deckFinalization,
+      "unchanged"
+    );
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
@@ -142,6 +387,7 @@ test("runs the deterministic mock through the same reconnectable lifecycle", asy
       message: "Add a recovery note",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
+      presentationSourceRevision: 7,
       llmApiKey: "test-api-key"
     });
     const events = await collect(service.subscribe({
@@ -178,6 +424,10 @@ test("keeps runs private to the authenticated user", async () => {
       () => fixture.service.cancel("another-user", accepted.runId),
       /Agent run not found/
     );
+    await collect(fixture.service.subscribe({
+      userId: fixture.user.id,
+      runId: accepted.runId
+    }));
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
@@ -688,7 +938,8 @@ test("withholds untrusted assistant stream text until terminal projection", () =
 async function createFixture(
   engine = createEngine(),
   logger?: AgentRunLogger,
-  createEngineFactory?: NonNullable<SlideXAgentRunServiceOptions["createEngine"]>
+  createEngineFactory?: NonNullable<SlideXAgentRunServiceOptions["createEngine"]>,
+  presentationDocumentRepository?: PresentationDocumentRepository
 ) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "slidex-agent-run-"));
   const sessionStore = new SessionStore(root);
@@ -702,6 +953,7 @@ async function createFixture(
       dataDir: root
     } as Env,
     agentSessionRepository: sessionStore,
+    presentationDocumentRepository,
     createEngine: createEngineFactory ?? (async () => engine),
     logger
   });
@@ -711,6 +963,7 @@ async function createFixture(
   ) => service.start(user, {
     presentationId: "presentation-1",
     presentationTitle: "Test deck",
+    presentationSourceRevision: 7,
     ...input
   }, options);
   return { root, service, sessionStore, start, user };
@@ -718,8 +971,11 @@ async function createFixture(
 
 type AgentRunTestInput = Omit<
   StartAgentRunInput,
-  "presentationId" | "presentationTitle"
-> & Partial<Pick<StartAgentRunInput, "presentationId" | "presentationTitle">>;
+  "presentationId" | "presentationTitle" | "presentationSourceRevision"
+> & Partial<Pick<
+  StartAgentRunInput,
+  "presentationId" | "presentationTitle" | "presentationSourceRevision"
+>>;
 
 async function readUtf8Files(root: string): Promise<Array<{ path: string; content: string }>> {
   const entries = await fs.readdir(root, { withFileTypes: true });

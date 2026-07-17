@@ -101,7 +101,9 @@ test("persists a user-scoped durable transcript with retry-safe messages", async
   );
   assert.deepEqual(await repository.deleteSession(userB, created.id), { ok: true });
   assert.ok(await repository.getSession(userA, created.id));
+  database.deleteFailuresRemaining = 1;
   assert.deepEqual(await repository.deleteSession(userA, created.id), { ok: true });
+  assert.equal(database.deleteAttempts, 3);
   assert.equal(await repository.getSession(userA, created.id), null);
   assert.equal(database.messages.length, 0);
   assert.equal(database.unscopedQueryCount, 0);
@@ -202,6 +204,8 @@ class InMemoryProductSessionDatabase {
   readonly presentations = new Map<string, PresentationRow>();
   readonly messages: ProductMessageRow[] = [];
   unscopedQueryCount = 0;
+  deleteAttempts = 0;
+  deleteFailuresRemaining = 0;
   private timestamp = Date.parse("2026-07-16T00:10:00.000Z");
 
   from(table: string): InMemoryProductQuery {
@@ -401,6 +405,14 @@ class InMemoryProductQuery implements PromiseLike<QueryResult> {
 
   private executeDelete(rows: DatabaseRow[]): QueryResult {
     assert.equal(this.table, "agent_sessions");
+    this.database.deleteAttempts += 1;
+    if (this.database.deleteFailuresRemaining > 0) {
+      this.database.deleteFailuresRemaining -= 1;
+      return {
+        data: null,
+        error: { code: "57014", message: "transient delete failure" }
+      };
+    }
     rows.forEach((row) => {
       this.database.sessions.delete(row.id);
       for (let index = this.database.messages.length - 1; index >= 0; index -= 1) {

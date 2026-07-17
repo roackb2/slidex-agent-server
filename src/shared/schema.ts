@@ -68,7 +68,8 @@ export const AgentPresentationInputSchema = z.object({
 
 export const StartAgentRunInputSchema = AgentStreamInputSchema.extend({
   ...AgentPresentationInputSchema.shape,
-  sourceRevision: z.string().trim().min(1).max(128)
+  sourceRevision: z.string().trim().min(1).max(128),
+  presentationSourceRevision: z.number().int().nonnegative()
 });
 
 export const StartAgentRunResultSchema = z.object({
@@ -154,7 +155,8 @@ export const SlideXRunResultSchema = z.object({
   session: SessionSchema,
   motionDoc: z.string(),
   assistantMessage: z.string(),
-  baseSourceRevision: z.string()
+  baseSourceRevision: z.string(),
+  presentationSourceRevision: z.number().int().nonnegative().optional()
 });
 
 export const AgentRunProtocol = new ConversationRunProtocolCodec({

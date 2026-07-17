@@ -11,7 +11,7 @@ import "dotenv/config";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { ConversationRunHttpSseClient } from "@roackb2/heddle-remote/http-sse";
 import { z } from "zod";
 import {
@@ -47,12 +47,14 @@ type TurnResult = {
 
 async function main(): Promise<void> {
   const config = readConfig();
-  const accessToken = await signInAnonymously(config.supabaseUrl, config.supabaseAnonKey);
-  const authorization = `Bearer ${accessToken}`;
+  const identity = await signInAnonymously(config.supabaseUrl, config.supabaseAnonKey);
+  const authorization = `Bearer ${identity.accessToken}`;
   const client = createRunClient(config.serverUrl, authorization);
   const turns = config.quality ? [...DEFAULT_TURNS, ...QUALITY_TURNS] : [...DEFAULT_TURNS];
+  const presentation = await createAcceptancePresentation(identity.client);
 
   let motionDoc = STARTER_MOTION_DOC;
+  let presentationSourceRevision = presentation.sourceRevision;
   let sessionId: string | undefined;
   const turnReports: Array<Record<string, unknown>> = [];
 
@@ -61,6 +63,9 @@ async function main(): Promise<void> {
       const before = motionDoc;
       const result = await runTurn(client, {
         sessionId,
+        presentationId: presentation.id,
+        presentationTitle: presentation.title,
+        presentationSourceRevision,
         message,
         motionDoc,
         llmApiKey: config.llmApiKey,
@@ -68,6 +73,8 @@ async function main(): Promise<void> {
         sourceRevision: sourceRevision(motionDoc)
       });
       motionDoc = result.terminal.result.motionDoc;
+      presentationSourceRevision = result.terminal.result.presentationSourceRevision
+        ?? presentationSourceRevision;
       sessionId = result.terminal.result.session.id;
 
       const readOnlyTurn = index === turns.length - 1 && config.quality;
@@ -183,7 +190,7 @@ function readConfig(): {
   };
 }
 
-async function signInAnonymously(supabaseUrl: string, supabaseAnonKey: string): Promise<string> {
+async function signInAnonymously(supabaseUrl: string, supabaseAnonKey: string) {
   const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
       persistSession: false,
@@ -195,7 +202,31 @@ async function signInAnonymously(supabaseUrl: string, supabaseAnonKey: string): 
   if (error || !data.session?.access_token) {
     throw new Error(`Anonymous Supabase sign-in failed: ${error?.message ?? "no access token returned"}`);
   }
-  return data.session.access_token;
+  return {
+    accessToken: data.session.access_token,
+    client: supabase
+  };
+}
+
+async function createAcceptancePresentation(
+  client: SupabaseClient
+) {
+  const title = "SlideX agent acceptance";
+  const { data, error } = await client
+    .from("presentations")
+    .insert({ title, source: STARTER_MOTION_DOC })
+    .select("id,title,source_revision")
+    .single();
+  if (error || !data) {
+    throw new Error(
+      `Acceptance Presentation creation failed: ${error?.message ?? "no row returned"}`
+    );
+  }
+  return {
+    id: String(data.id),
+    title: String(data.title),
+    sourceRevision: Number(data.source_revision)
+  };
 }
 
 function createRunClient(serverUrl: string, authorization: string) {

@@ -188,18 +188,27 @@ export class SupabaseAgentSessionRepository implements AgentSessionRepository {
   }
 
   async deleteSession(userId: string, sessionId: string): Promise<{ ok: true }> {
-    const { data, error } = await this.client
+    const first = await this.deleteSessionRow(userId, sessionId);
+    // The delete is owner-scoped and idempotent. Retrying once safely covers
+    // both a transient failure and a lost response after a committed cascade.
+    const { data, error } = first.error
+      ? await this.deleteSessionRow(userId, sessionId)
+      : first;
+    throwIfSupabaseFailed("delete conversation", error);
+    if (data) {
+      AgentSessionIdRowSchema.parse(data);
+    }
+    return { ok: true };
+  }
+
+  private deleteSessionRow(userId: string, sessionId: string) {
+    return this.client
       .from(AGENT_SESSIONS_TABLE)
       .delete()
       .eq("id", sessionId)
       .eq("user_id", userId)
       .select("id")
       .maybeSingle();
-    throwIfSupabaseFailed("delete conversation", error);
-    if (data) {
-      AgentSessionIdRowSchema.parse(data);
-    }
-    return { ok: true };
   }
 
   private async readSessionPage(
