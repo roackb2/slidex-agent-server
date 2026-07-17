@@ -120,7 +120,7 @@ user-facing product projection.
 | Product user | Supabase user ID from a bearer token | Anonymous auth is the MVP identity. The Supabase browser session may survive refresh. |
 | Editor project | Stable project instance ID in `sessionStorage` | Tab-scoped; independent of mutable project names; new/imported decks rotate it. |
 | Product conversation | SlideX `sessionId` | File JSON under `DATA_DIR/sessions/<user>/` or Supabase `agent_sessions` plus `agent_session_messages`; contains the browser-safe transcript and Presentation association. |
-| Model conversation | Deterministic Heddle session | File state under `DATA_DIR/heddle/` or Supabase `agent_session_records`; contains model-facing history and one durable conversation per SlideX product session. |
+| Model conversation | Deterministic Heddle session | File state under `DATA_DIR/heddle/` or Supabase `agent_session_records` plus the archive tables; contains model-facing history, compacted transcripts, rolling summaries, and one durable conversation per SlideX product session. |
 | Active run and replay | In-process `ConversationRunService` | One active run per user/session; up to 512 events retained for five minutes. Lost on process restart. |
 | Model credential | Agent-panel React state and the live run-start request | Forgotten on refresh or **Forget key**. Never persisted, logged, traced, emitted, or placed in URLs/cookies/analytics. |
 | Current deck | Editor source, request MotionDoc, canonical `presentations.source`, and accepted Heddle artifact | The request source is authoritative at run start because the user may edit manually between turns; Supabase product-history hydration reads the canonical Presentation rather than duplicating deck source in message rows. |
@@ -417,6 +417,9 @@ At minimum:
    manual-edit result all produce honest recoverable states.
 7. Confirm the exact model key has no matches in browser/server persistence,
    public events/results, Heddle state, or logs.
+8. Force one Heddle compaction, replace the server process, and verify a fresh
+   repository/engine loads the manifest and rolling summary before continuing
+   the conversation.
 
 Record requested versus actual artifact changes, latency, tool activity,
 validation result, and pass/fail for each turn.
@@ -429,7 +432,7 @@ validation result, and pass/fail for each turn.
 | `Failed to fetch` | Confirm the server is listening on the URL embedded in the editor, the browser origin is in `CORS_ORIGIN`, and HTTPS pages are not calling an HTTP API. |
 | Stuck on **Working** or **Thinking** | Inspect the run by `runId`, server terminal logs, SSE proxy buffering/timeouts, provider credential/quota state, and MCP subprocess output. |
 | Key is empty after refresh | Expected: BYOK is current-tab memory only. Re-enter it. |
-| Conversation or deck disappears after deploy | Confirm both Supabase selectors are enabled, the service-role credential can access `agent_sessions`, `agent_session_messages`, `agent_session_records`, and the append RPC, and the canonical `presentations.source` was saved. In file mode, confirm a persistent `DATA_DIR` volume is mounted. |
+| Conversation or deck disappears after deploy | Confirm both Supabase selectors are enabled, the service-role credential can access `agent_sessions`, `agent_session_messages`, `agent_session_records`, both archive tables, and both append RPCs, and the canonical `presentations.source` was saved. In file mode, confirm a persistent `DATA_DIR` volume is mounted. |
 | `replay_unavailable` | The in-process replay window expired or the process restarted. Hydrate durable session history; do not invent missing progress. |
 | MCP preparation fails | Verify the configured command, arguments, working directory, installed artifact, Node version, and filesystem permissions inside the service environment. |
 | Completed result does not overwrite the deck | Check validation and source-revision conflict state. A failed validation or manual edit intentionally prevents silent replacement. |
@@ -493,10 +496,11 @@ For cross-replica completed-conversation continuity, select Supabase for both
 the product transcript (`SLIDEX_PRODUCT_SESSION_STORAGE=supabase`) and Heddle's
 model-facing conversation (`HEDDLE_SESSION_STORAGE=supabase`). The product
 adapter persists `agent_sessions` plus `agent_session_messages`; Heddle persists
-the complete runtime record in `agent_session_records`. Active run/SSE state is
-still process-local, so a reconnect after process loss hydrates the last
-completed conversation instead of pretending that missing live progress was
-replayed.
+the complete runtime record in `agent_session_records` and its compacted
+history in `agent_session_archives` plus `agent_session_archive_heads`. Active
+run/SSE state is still process-local, so a reconnect after process loss
+hydrates the last completed conversation instead of pretending that missing
+live progress was replayed.
 
 ## Code reading order
 

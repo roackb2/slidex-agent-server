@@ -31,9 +31,9 @@ import {
   PresentationDocumentConflictError,
   type PresentationDocumentRepository
 } from "../storage/presentationDocumentRepository.js";
+import { createHeddleChatRepositoryResolver } from "./heddleChatStorage.js";
 import { createSlideXConversationEngine } from "./heddleDriver.js";
 import { createMockConversationEngine } from "./mockConversationEngine.js";
-import { createChatSessionRepositoryResolver } from "./supabaseChatSessionRepository.js";
 import {
   buildPrompt,
   createSlideXApprovalHost,
@@ -211,11 +211,11 @@ export class SlideXAgentRunService {
       return;
     }
 
-    const resolveSessionRepository = createChatSessionRepositoryResolver(options.env);
+    const resolveRepositories = createHeddleChatRepositoryResolver(options.env);
     this.createEngine = (env, input) => createSlideXConversationEngine(
       env,
       input,
-      { sessionRepository: resolveSessionRepository(input.user.id) }
+      resolveRepositories(input.user.id)
     );
   }
 

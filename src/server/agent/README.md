@@ -7,6 +7,13 @@ This directory owns the SlideX-specific orchestration around the Heddle SDK.
   repository contract against the server-only `agent_session_records` table.
   Each repository instance is scoped to one verified SlideX user, and every
   service-role query retains that explicit `user_id` predicate.
+- `supabaseChatArchiveRepository.ts` implements Heddle's append-only compaction
+  archive contract against `agent_session_archives`,
+  `agent_session_archive_heads`, and `append_agent_session_archive`. Locators
+  address stored content but never select authorization scope.
+- `heddleChatStorage.ts` is the persistence composition root. File mode lets
+  Heddle construct both local adapters; Supabase mode shares one server-only
+  client and binds both repositories to the same verified user.
 - `mockConversationEngine.ts` adapts the existing deterministic mock driver to
   the same engine/run-service path. Mock mode changes execution only; it must
   still exercise Heddle run identity, replay, cancellation, product history,
@@ -63,20 +70,22 @@ or failure. Every service-role operation remains scoped to the verified user.
 upgrades a record on its next mutation, so deployments must keep the same
 volume mounted during the package upgrade.
 
-`HEDDLE_SESSION_STORAGE=supabase` injects a
-`SupabaseChatSessionRepository` into `createConversationEngine`. This mode is
-an explicit cutover, not dual-write or fallback behavior. Startup also requires
-`SUPABASE_URL` and the server-only `SUPABASE_SERVICE_ROLE_KEY`. Keep file mode
-active until the `agent_session_records` migration, constraints, indexes,
-grants, and live adapter acceptance have passed in the target project. Product
-Presentation/session relationships and visible chat projection remain in
-SlideX storage rather than in the Heddle conversation record.
+`HEDDLE_SESSION_STORAGE=supabase` injects both
+`SupabaseChatSessionRepository` and `SupabaseChatArchiveRepository` into
+`createConversationEngine`. This mode is an explicit cutover, not dual-write
+or fallback behavior. Startup also requires `SUPABASE_URL` and the server-only
+`SUPABASE_SERVICE_ROLE_KEY`. Keep file mode active until the session-record and
+archive migrations, append RPC, grants, and live adapter acceptance have
+passed in the target project. Product Presentation/session relationships and
+visible chat projection remain in SlideX storage rather than in the Heddle
+conversation record.
 
 Use both Supabase selectors for cross-replica completed-conversation
 continuity. Product storage restores the safe transcript; Heddle storage
-restores model-facing memory. Active execution, cancellation, SSE, and short
-replay remain process-local, so an in-flight run may be lost with its process
-even though previously committed input and completed turns survive.
+restores model-facing memory plus completed compaction archives and their
+rolling summary. Active execution, cancellation, SSE, and short replay remain
+process-local, so an in-flight run may be lost with its process even though
+previously committed input and completed turns survive.
 
 Accepted user messages and success, cancellation, or failure terminals are
 persisted as one explainable product history. Reset marks an in-flight address

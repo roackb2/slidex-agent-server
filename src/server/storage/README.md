@@ -62,7 +62,7 @@ dual-write, merge, or silent fallback between file and Supabase storage.
 This directory does not own:
 
 - Heddle model execution, runtime conversation records, leases, compaction,
-  traces, or artifacts;
+  compaction archives, traces, or artifacts;
 - process-local active-run coordination, cancellation, SSE, or short replay;
 - HTTP authentication, CORS, or public error projection; or
 - editor undo/redo, local stale-result protection, or the Presentation schema
@@ -71,6 +71,7 @@ This directory does not own:
 Heddle runtime persistence is selected independently with
 `HEDDLE_SESSION_STORAGE`. Cross-replica completed-conversation continuity
 requires both selectors to use Supabase: product storage restores what the
-user sees, while Heddle storage restores what the model remembers. Losing an
-in-flight process-local run is an accepted MVP behavior; completed turns remain
-available after refresh or on another replica.
+user sees, while Heddle storage restores what the model remembers, including
+its compacted transcript and rolling summary. Losing an in-flight process-local
+run is an accepted MVP behavior; completed turns remain available after
+refresh or on another replica.

@@ -12,9 +12,8 @@ import {
   type StoredChatSession,
   type UpdateChatSessionInput
 } from "@roackb2/heddle";
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
-import type { Env } from "../env.js";
 
 const AGENT_SESSION_RECORDS_TABLE = "agent_session_records";
 const RECORD_FORMAT = 1;
@@ -62,10 +61,6 @@ type SupabaseFailure = {
   code?: string;
   message?: string;
 };
-
-export type ChatSessionRepositoryResolver = (
-  userId: string
-) => ChatSessionRepository | undefined;
 
 /**
  * Supabase adapter for Heddle's complete, revisioned conversation record.
@@ -221,31 +216,6 @@ export class SupabaseChatSessionRepository implements ChatSessionRepository {
     throwIfSupabaseFailed("read revision", error);
     return data ? parseRevision(data) : undefined;
   }
-}
-
-/**
- * Resolves the configured repository once at service construction time. The
- * Supabase client is shared, while each returned repository is user-scoped.
- */
-export function createChatSessionRepositoryResolver(
-  env: Env
-): ChatSessionRepositoryResolver {
-  if (env.HEDDLE_SESSION_STORAGE === "file") {
-    return () => undefined;
-  }
-  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
-    throw new Error(
-      "Supabase Heddle session storage requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."
-    );
-  }
-
-  const client = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false
-    }
-  });
-  return (userId) => new SupabaseChatSessionRepository(client, userId);
 }
 
 function toInsertRow(session: ChatSession, userId: string, revision: number) {

@@ -217,7 +217,7 @@ MOTIONDOC_MCP_ARGS='["/app/path/to/motiondoc-mcp.js"]'
 MOTIONDOC_MCP_CWD=/app
 ```
 
-The SlideX conversational agent is built in this repo (`src/server/agent/slidexHeddleAgent.ts`), driven by `src/server/agent/heddleDriver.ts`. The driver prepares the SlideX MCP once as a **self-contained Heddle host extension**, then builds a fresh, user-scoped conversation engine per request and delegates the turn to the agent module. The deterministic internal session ID makes those engines reuse one durable Heddle conversation. Heddle v5 owns the asynchronous, revision-safe conversation catalog plus model-facing history, leases, and compaction; the server's `Session.messages` remains the user-facing chat projection and is not replayed into model prompts.
+The SlideX conversational agent is built in this repo (`src/server/agent/slidexHeddleAgent.ts`), driven by `src/server/agent/heddleDriver.ts`. The driver prepares the SlideX MCP once as a **self-contained Heddle host extension**, then builds a fresh, user-scoped conversation engine per request and delegates the turn to the agent module. The deterministic internal session ID makes those engines reuse one durable Heddle conversation. Heddle v5.1 owns the asynchronous, revision-safe conversation catalog plus model-facing history, leases, and compaction; the server's `Session.messages` remains the user-facing chat projection and is not replayed into model prompts.
 
 `SLIDEX_PRODUCT_SESSION_STORAGE=file` keeps the browser-visible conversation
 catalog and transcript under `DATA_DIR/sessions`. Set it to `supabase` only
@@ -236,11 +236,14 @@ mode stores an explicit durable pending result for browser reconciliation.
 sessions are read in place and upgraded on their next mutation, so the Railway
 `DATA_DIR` volume must remain mounted across the package upgrade. A prepared
 `HEDDLE_SESSION_STORAGE=supabase` mode injects the server-owned
-`SupabaseChatSessionRepository` into Heddle. It requires `SUPABASE_URL` plus
-`SUPABASE_SERVICE_ROLE_KEY`, scopes every query to the verified user, and uses
-atomic expected revisions for updates and deletes. Do not enable it until the
-`agent_session_records` migration and live acceptance have passed. Selection
-is a clean cutover: the server does not dual-write or silently fall back.
+`SupabaseChatSessionRepository` and `SupabaseChatArchiveRepository` into
+Heddle. They share one service-role client, bind every operation to the same
+verified user, use expected revisions for session updates, and use
+`append_agent_session_archive` for atomic compaction writes. Do not enable this
+mode until `agent_session_records`, `agent_session_archives`,
+`agent_session_archive_heads`, and the append RPC are deployed and live
+acceptance has passed. Selection is a clean cutover: the server does not
+dual-write or silently fall back.
 
 For completed conversation continuity across replicas, configure both
 `SLIDEX_PRODUCT_SESSION_STORAGE=supabase` and
@@ -250,7 +253,7 @@ separate so neither public product history nor opaque runtime state becomes an
 accidental projection of the other. Active execution, cancellation, SSE, and
 short replay remain process-local; a disconnect may be resumed only while the
 owning process retains the run, but refresh after completion hydrates the
-durable transcript and deck.
+durable transcript, deck, compacted history, and rolling archive summary.
 
 The extension uses Heddle mirror result-artifact rules for MotionDoc-writing tools. Each updated MotionDoc is persisted and set as the current session artifact while its full `source` remains inline for the next stateless MCP edit. The agent reads a newly mirrored artifact after the turn; if no new artifact was produced, it preserves the request's authoritative MotionDoc so a read-only turn cannot restore stale deck state.
 

@@ -1,11 +1,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createConversationEngine } from "@roackb2/heddle";
-import type { ChatSessionRepository, ConversationEngine } from "@roackb2/heddle";
+import type { ConversationEngine } from "@roackb2/heddle";
 import type { Env } from "../env.js";
+import {
+  createHeddleChatRepositoryResolver,
+  type HeddleChatRepositories
+} from "./heddleChatStorage.js";
 import { prepareSlideXExtension } from "./slidexExtension.js";
 import { runSlideXAgent } from "./slidexHeddleAgent.js";
-import { createChatSessionRepositoryResolver } from "./supabaseChatSessionRepository.js";
 import type { AgentDriver, AgentRunArgs } from "./types.js";
 
 /**
@@ -20,7 +23,7 @@ import type { AgentDriver, AgentRunArgs } from "./types.js";
  * via the extension, so the server's StdioMcpProcessManager is not used here.
  */
 export function createHeddleDriver(env: Env): AgentDriver {
-  const resolveSessionRepository = createChatSessionRepositoryResolver(env);
+  const resolveRepositories = createHeddleChatRepositoryResolver(env);
   return {
     async run(args) {
       await args.emit({
@@ -31,9 +34,11 @@ export function createHeddleDriver(env: Env): AgentDriver {
         type: "status",
         message: "Creating user-scoped Heddle conversation engine"
       });
-      const engine = await createSlideXConversationEngine(env, args, {
-        sessionRepository: resolveSessionRepository(args.user.id)
-      });
+      const engine = await createSlideXConversationEngine(
+        env,
+        args,
+        resolveRepositories(args.user.id)
+      );
 
       return runSlideXAgent({
         engine,
@@ -51,7 +56,7 @@ export function createHeddleDriver(env: Env): AgentDriver {
 export async function createSlideXConversationEngine(
   env: Env,
   args: Pick<AgentRunArgs, "user" | "sessionId" | "llmApiKey" | "model">,
-  options: { sessionRepository?: ChatSessionRepository } = {}
+  repositories: HeddleChatRepositories = {}
 ): Promise<ConversationEngine> {
   const extension = await prepareSlideXExtension(env);
   const stateRoot = path.join(
@@ -77,9 +82,7 @@ export async function createSlideXConversationEngine(
       ? { credentialStorePath: devAuthStore }
       : { apiKey: args.llmApiKey, preferApiKey: true }),
     model: args.model,
-    ...(options.sessionRepository
-      ? { sessionRepository: options.sessionRepository }
-      : {}),
+    ...repositories,
     memoryMaintenanceMode: "none",
     toolProfile: {
       preset: "default",
