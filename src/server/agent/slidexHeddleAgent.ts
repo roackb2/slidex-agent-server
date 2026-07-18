@@ -71,7 +71,8 @@ export type RunSlideXAgentArgs = {
 };
 
 const DEFAULT_MAX_STEPS = 24;
-export const SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS = 240;
+export const SLIDEX_DECK_CHANGE_MESSAGE_MAX_CHARS = 240;
+export const SLIDEX_READ_ONLY_MESSAGE_MAX_CHARS = 1_200;
 
 const VALIDATE_MOTION_DOC_TOOL = "slidex_validate_motion_doc";
 const MOTION_DOC_SOURCE_MARKERS = [
@@ -81,6 +82,8 @@ const MOTION_DOC_SOURCE_MARKERS = [
 ] as const;
 const VALIDATION_PASSED_MARKER = /\b(?:validation\s+(?:passed|succeeded)|passed\s+validation|isValid\s*:\s*true)\b/i;
 const VALIDATION_SUFFIX = " Validation passed.";
+const OVERSIZED_READ_ONLY_MESSAGE = "The answer was too long to display safely. Ask for a shorter response.";
+const SENTENCE_SEGMENTER = new Intl.Segmenter("en", { granularity: "sentence" });
 
 const ValidationToolInputSchema = z.object({
   source: z.string()
@@ -223,7 +226,7 @@ async function emitForActivity(
  * A changed deck must have a successful validation tool result for the exact
  * MotionDoc being returned. Model-authored summary text is never partially
  * scrubbed: source-like output is replaced with stable product copy, while
- * source-free output is bounded for the narrow chat panel.
+ * source-free output is bounded without cutting a visible sentence in half.
  */
 export function projectSlideXTurnResult(input: {
   engine: ConversationEngineLike;
@@ -289,28 +292,50 @@ function projectAssistantMessage(input: {
     : input.motionDocChanged
       ? "Updated the deck."
       : "Answered the request without changing the deck.";
+  const messageLimit = input.motionDocChanged
+    ? SLIDEX_DECK_CHANGE_MESSAGE_MAX_CHARS
+    : SLIDEX_READ_ONLY_MESSAGE_MAX_CHARS;
+  const contentLimit = input.motionDocChanged
+    ? messageLimit - VALIDATION_SUFFIX.length
+    : messageLimit;
+  const conciseSummary = truncateAtSentence(
+    sourceFreeSummary,
+    contentLimit,
+    input.motionDocChanged ? "Updated the deck." : OVERSIZED_READ_ONLY_MESSAGE
+  );
   const needsValidationSuffix = input.motionDocChanged
-    && !VALIDATION_PASSED_MARKER.test(sourceFreeSummary);
-  const contentLimit = needsValidationSuffix
-    ? SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS - VALIDATION_SUFFIX.length
-    : SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS;
-  const conciseSummary = truncateAtWord(sourceFreeSummary, contentLimit);
+    && !VALIDATION_PASSED_MARKER.test(conciseSummary);
   return needsValidationSuffix
     ? `${conciseSummary}${VALIDATION_SUFFIX}`
     : conciseSummary;
 }
 
-function truncateAtWord(value: string, maxChars: number): string {
+function truncateAtSentence(
+  value: string,
+  maxChars: number,
+  oversizedFallback: string
+): string {
   if (value.length <= maxChars) {
     return value;
   }
 
-  const candidate = value.slice(0, maxChars - 1).trimEnd();
-  const wordBoundary = candidate.lastIndexOf(" ");
-  const truncated = wordBoundary > maxChars / 2
-    ? candidate.slice(0, wordBoundary)
-    : candidate;
-  return `${truncated.trimEnd()}…`;
+  let completeSentences = "";
+  for (const { segment } of SENTENCE_SEGMENTER.segment(value)) {
+    const sentence = segment.trim();
+    if (!sentence) {
+      continue;
+    }
+
+    const candidate = completeSentences
+      ? `${completeSentences} ${sentence}`
+      : sentence;
+    if (candidate.length > maxChars - 1) {
+      break;
+    }
+    completeSentences = candidate;
+  }
+
+  return completeSentences ? `${completeSentences}…` : oversizedFallback;
 }
 
 export function buildPrompt(args: Pick<RunSlideXAgentArgs, "motionDoc" | "message">): string {
@@ -326,7 +351,7 @@ ${trimmedDoc}
 
 User request: ${args.message}
 
-Use the SlideX MotionDoc tools to fulfill the request and validate the final result. Reply with one short plain-text summary of what changed and whether validation passed. Never include MotionDoc source, fenced code, or SlideX component markup in the reply.`;
+Use the SlideX MotionDoc tools to fulfill the request and validate the final result. Reply directly and concisely to the user in plain text, following any requested response format. If you changed the deck, summarize what changed and whether validation passed. Never include MotionDoc source, fenced code, or SlideX component markup in the reply.`;
 }
 
 export async function resolveConversationSession(

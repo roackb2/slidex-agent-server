@@ -29,7 +29,10 @@ import {
   type AgentRunLogger,
   type SlideXAgentRunServiceOptions
 } from "./slidexAgentRunService.js";
-import { SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS } from "./slidexHeddleAgent.js";
+import {
+  SLIDEX_DECK_CHANGE_MESSAGE_MAX_CHARS,
+  SLIDEX_READ_ONLY_MESSAGE_MAX_CHARS
+} from "./slidexHeddleAgent.js";
 
 test("streams a reconnectable run and persists the completed SlideX session", async () => {
   const fixture = await createFixture();
@@ -308,6 +311,67 @@ test("does not increment the Presentation revision for an unchanged result", asy
     assert.equal(
       terminal.result.session.messages.at(-1)?.metadata?.deckFinalization,
       "unchanged"
+    );
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("preserves a complete two-sentence read-only answer beyond the deck-change limit", async () => {
+  const answer = "The deck moves from defining Heddle, to explaining why its local-first approach matters, to a call to get started and build with the SDK, ending with a brief durability takeaway. The weakest transition is from the ‘Local-first’ slide to the ‘Core capabilities’ slide because it shifts from motivation to feature inventory without a connecting bridge.";
+  assert.ok(answer.length > SLIDEX_DECK_CHANGE_MESSAGE_MAX_CHARS);
+  const fixture = await createFixture(createEngine(async () => createTurnResult({
+    summary: answer
+  })));
+
+  try {
+    const accepted = await fixture.start({
+      message: "Inspect the deck without changing it and answer in exactly two sentences",
+      motionDoc: "# Updated deck",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key"
+    });
+    const events = await collect(fixture.service.subscribe({
+      userId: fixture.user.id,
+      runId: accepted.runId
+    }));
+    const terminal = events.at(-1);
+
+    assert.ok(terminal && terminal.kind === "result");
+    assert.equal(terminal.result.assistantMessage, answer);
+    assert.ok(terminal.result.assistantMessage.length <= SLIDEX_READ_ONLY_MESSAGE_MAX_CHARS);
+    assert.equal(terminal.result.session.messages.at(-1)?.content, answer);
+  } finally {
+    await fs.rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("bounds an oversized read-only answer after its last complete sentence", async () => {
+  const sentence = `The narrative stays coherent because ${"each section builds on the prior point ".repeat(12).trim()}.`;
+  const summary = `${sentence} ${sentence} ${sentence}`;
+  const fixture = await createFixture(createEngine(async () => createTurnResult({
+    summary
+  })));
+
+  try {
+    const accepted = await fixture.start({
+      message: "Inspect the deck without changing it",
+      motionDoc: "# Updated deck",
+      sourceRevision: "revision-1",
+      llmApiKey: "test-api-key"
+    });
+    const events = await collect(fixture.service.subscribe({
+      userId: fixture.user.id,
+      runId: accepted.runId
+    }));
+    const terminal = events.at(-1);
+
+    assert.ok(terminal && terminal.kind === "result");
+    assert.equal(terminal.result.assistantMessage, `${sentence} ${sentence}…`);
+    assert.ok(terminal.result.assistantMessage.length <= SLIDEX_READ_ONLY_MESSAGE_MAX_CHARS);
+    assert.equal(
+      terminal.result.session.messages.at(-1)?.content,
+      terminal.result.assistantMessage
     );
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
@@ -635,7 +699,7 @@ test("replaces source-like terminal summaries before returning or persisting the
         assert.ok(terminal && terminal.kind === "result");
         assert.equal(terminal.result.assistantMessage, "Updated the deck. Validation passed.");
         assert.ok(
-          terminal.result.assistantMessage.length <= SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS
+          terminal.result.assistantMessage.length <= SLIDEX_DECK_CHANGE_MESSAGE_MAX_CHARS
         );
         assert.doesNotMatch(
           terminal.result.assistantMessage,
@@ -675,8 +739,8 @@ test("bounds source-free assistant copy and retains the authoritative validation
     const terminal = events.at(-1);
 
     assert.ok(terminal && terminal.kind === "result");
-    assert.ok(terminal.result.assistantMessage.length <= SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS);
-    assert.match(terminal.result.assistantMessage, /… Validation passed\.$/);
+    assert.ok(terminal.result.assistantMessage.length <= SLIDEX_DECK_CHANGE_MESSAGE_MAX_CHARS);
+    assert.match(terminal.result.assistantMessage, /copy\.… Validation passed\.$/);
   } finally {
     await fs.rm(fixture.root, { recursive: true, force: true });
   }
