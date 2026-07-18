@@ -105,7 +105,11 @@ Successful result projection is also a product boundary. A changed MotionDoc is
 accepted only when the turn includes a successful `slidex_validate_motion_doc`
 result for that exact final source. The same projected assistant message is
 persisted and returned: source-like model output is replaced wholesale, never
-partially scrubbed, and source-free copy is capped for the narrow agent panel.
+partially scrubbed. Changed-deck summaries remain capped at 240 characters and
+retain the authoritative validation outcome. Read-only answers preserve up to
+1,200 characters so the product can honor a concise requested response format;
+oversized copy stops after the last complete sentence that fits rather than
+showing a sentence fragment.
 Raw `assistant.stream` text is withheld from product activity events until this
 terminal projection has run; status and tool activity remain visible.
 In Supabase product mode, the run service then commits a changed source through

@@ -22,7 +22,10 @@ import {
   type StartAgentRunInput,
   type StartAgentRunResult
 } from "../src/shared/schema.js";
-import { SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS } from "../src/server/agent/slidexHeddleAgent.js";
+import {
+  SLIDEX_DECK_CHANGE_MESSAGE_MAX_CHARS,
+  SLIDEX_READ_ONLY_MESSAGE_MAX_CHARS
+} from "../src/server/agent/slidexHeddleAgent.js";
 
 const STARTER_MOTION_DOC = `<Slide duration={5} theme="light" background="#ffffff" accent="#2563eb" textColor="#0f172a">
   <Text x={10} y={28} width={80} fontSize={72} fontWeight={700}>A clear opening</Text>
@@ -57,6 +60,7 @@ async function main(): Promise<void> {
   let presentationSourceRevision = presentation.sourceRevision;
   let sessionId: string | undefined;
   const turnReports: Array<Record<string, unknown>> = [];
+  const assistantMessageLimits: number[] = [];
 
   try {
     for (const [index, message] of turns.entries()) {
@@ -78,15 +82,22 @@ async function main(): Promise<void> {
       sessionId = result.terminal.result.session.id;
 
       const readOnlyTurn = index === turns.length - 1 && config.quality;
+      const deckChanged = before !== motionDoc;
+      const assistantMessageLimit = deckChanged
+        ? SLIDEX_DECK_CHANGE_MESSAGE_MAX_CHARS
+        : SLIDEX_READ_ONLY_MESSAGE_MAX_CHARS;
+      assistantMessageLimits.push(assistantMessageLimit);
       turnReports.push({
         turn: index + 1,
         runId: result.terminal.runId,
         eventCount: result.events.length,
         toolActivityCount: result.events.filter(isToolActivity).length,
-        deckChanged: before !== motionDoc,
+        deckChanged,
         expectedDeckChange: !readOnlyTurn,
         slideCount: countSlides(motionDoc),
-        assistantPreview: preview(result.terminal.result.assistantMessage)
+        assistantPreview: preview(result.terminal.result.assistantMessage),
+        assistantMessageChars: result.terminal.result.assistantMessage.length,
+        assistantMessageLimit
       });
 
       requireCondition(
@@ -120,6 +131,11 @@ async function main(): Promise<void> {
     0,
     ...assistantMessages.map(({ content }) => content.length)
   );
+  const assistantMessageLimitExceeded = assistantMessages.some(
+    ({ content }, index) => content.length > (
+      assistantMessageLimits[index] ?? SLIDEX_DECK_CHANGE_MESSAGE_MAX_CHARS
+    )
+  );
 
   requireCondition(hydrated.activeRun === null, "Hydrated session still reports an active run");
   requireCondition(
@@ -137,8 +153,8 @@ async function main(): Promise<void> {
     "An assistant summary included MotionDoc source or source-like markup"
   );
   requireCondition(
-    longestAssistantMessage <= SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS,
-    `An assistant summary exceeded ${SLIDEX_ASSISTANT_MESSAGE_MAX_CHARS} characters`
+    !assistantMessageLimitExceeded,
+    "An assistant message exceeded the changed-deck or read-only product limit"
   );
 
   console.log(JSON.stringify({
@@ -157,6 +173,8 @@ async function main(): Promise<void> {
     qualitySignals: {
       summaryLeaksMotionDocSource: summaryLeaksSource,
       longestAssistantMessage,
+      deckChangeMessageLimit: SLIDEX_DECK_CHANGE_MESSAGE_MAX_CHARS,
+      readOnlyMessageLimit: SLIDEX_READ_ONLY_MESSAGE_MAX_CHARS,
       finalSlideCount: countSlides(motionDoc)
     }
   }, null, 2));
