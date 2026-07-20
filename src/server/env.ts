@@ -31,9 +31,9 @@ const EnvSchema = z.object({
   DEV_USER_EMAIL: z.string().optional(),
   // Dev-only: path to a Heddle auth.json with an OpenAI OAuth login (e.g. a
   // Codex subscription via `npx heddle auth login openai`). When set (and not
-  // production), the Heddle driver ignores the per-request llmApiKey and lets
+  // production), the Heddle driver ignores the per-request model credential and lets
   // Heddle resolve the OAuth credential instead — so features can be tested
-  // without API-key billing. Production always uses the per-request key.
+  // without API-key billing. Production always uses the per-request credential.
   DEV_HEDDLE_AUTH_STORE: z.string().optional(),
   MOTIONDOC_MCP_COMMAND: z.string().optional(),
   MOTIONDOC_MCP_ARGS: z.string().optional(),

@@ -7,13 +7,14 @@ import {
 } from "@roackb2/heddle";
 import type { AuthUser } from "../auth.js";
 import type { Env } from "../env.js";
+import type { ModelCredential } from "../../shared/schema.js";
 import { createMockDriver } from "./mockDriver.js";
 import type { AgentProgressEvent } from "./types.js";
 
 type CreateMockConversationEngineInput = {
   user: AuthUser;
   sessionId: string;
-  llmApiKey: string;
+  modelCredential: ModelCredential;
   model: string;
   motionDoc: string;
   message: string;
@@ -58,7 +59,7 @@ export async function createMockConversationEngine(
           sessionId: input.sessionId,
           motionDoc: input.motionDoc,
           message: input.message,
-          llmApiKey: input.llmApiKey,
+          modelCredential: input.modelCredential,
           model: input.model,
           signal: turn.abortSignal ?? new AbortController().signal,
           emit: (event) => {

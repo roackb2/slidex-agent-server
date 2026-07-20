@@ -18,8 +18,19 @@ import {
 } from "./routes/agentRuns.js";
 import { createHttpLogger, createServerLogger } from "./observability/logger.js";
 import { createCorsOriginPolicy } from "./http/corsPolicy.js";
+import {
+  createOpenAiDeviceCodePollRateLimit,
+  createOpenAiDeviceCodeStartRateLimit,
+  createPollOpenAiDeviceCodeHandler,
+  createRequestOpenAiDeviceCodeHandler,
+  type OpenAiDeviceCodeAuthPort
+} from "./routes/modelAuth.js";
 
-export function createApp(deps: ServerDeps & Pick<AgentStreamDeps, "mcpManager">) {
+type AppDeps = ServerDeps & Pick<AgentStreamDeps, "mcpManager"> & {
+  deviceCodeAuth?: OpenAiDeviceCodeAuthPort;
+};
+
+export function createApp(deps: AppDeps) {
   const app = express();
   const logger = deps.logger ?? createServerLogger(deps.env);
   const agentSessionRepository = deps.agentSessionRepository ?? deps.sessionStore;
@@ -70,8 +81,22 @@ export function createApp(deps: ServerDeps & Pick<AgentStreamDeps, "mcpManager">
       authService: deps.authService,
       agentRunService
     };
+    const modelAuthRouteDeps = {
+      authService: deps.authService,
+      deviceCodeAuth: deps.deviceCodeAuth
+    };
 
     app.post("/api/agent/runs", createStartAgentRunHandler(agentRunRouteDeps));
+    app.post(
+      "/api/agent/model-auth/openai/device-code",
+      createOpenAiDeviceCodeStartRateLimit(),
+      createRequestOpenAiDeviceCodeHandler(modelAuthRouteDeps)
+    );
+    app.post(
+      "/api/agent/model-auth/openai/device-code/poll",
+      createOpenAiDeviceCodePollRateLimit(),
+      createPollOpenAiDeviceCodeHandler(modelAuthRouteDeps)
+    );
     app.get("/api/agent/sessions", createListAgentSessionsHandler({
       authService: deps.authService,
       agentSessionRepository

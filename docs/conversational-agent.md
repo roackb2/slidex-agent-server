@@ -122,7 +122,8 @@ user-facing product projection.
 | Product conversation | SlideX `sessionId` | File JSON under `DATA_DIR/sessions/<user>/` or Supabase `agent_sessions` plus `agent_session_messages`; contains the browser-safe transcript and Presentation association. |
 | Model conversation | Deterministic Heddle session | File state under `DATA_DIR/heddle/` or Supabase `agent_session_records` plus the archive tables; contains model-facing history, compacted transcripts, rolling summaries, and one durable conversation per SlideX product session. |
 | Active run and replay | In-process `ConversationRunService` | One active run per user/session; up to 512 events retained for five minutes. Lost on process restart. |
-| Model credential | Agent-panel React state and the live run-start request | Forgotten on refresh or **Forget key**. Never persisted, logged, traced, emitted, or placed in URLs/cookies/analytics. |
+| Model credential | Agent-panel React state and the live run-start request | OpenAI API key or short-lived Codex access token. Forgotten on refresh or disconnect. Never persisted, logged, traced, emitted, or placed in URLs/cookies/analytics. |
+| Codex device challenge | Agent-panel React state and authenticated model-auth poll request | Exists only while the user completes OpenAI device authorization. The server does not retain it; refresh or cancellation discards it. |
 | Current deck | Editor source, request MotionDoc, canonical `presentations.source`, and accepted Heddle artifact | The request source is authoritative at run start because the user may edit manually between turns; Supabase product-history hydration reads the canonical Presentation rather than duplicating deck source in message rows. |
 
 Supabase owns identity and can own completed deck, product-transcript, and
@@ -138,6 +139,11 @@ authentication.
 
 - `POST /api/agent/runs` accepts a run and returns `202` with `runId`,
   `acceptedAt`, and the accepted product session.
+- `POST /api/agent/model-auth/openai/device-code` returns a no-store OpenAI
+  device-code challenge for the authenticated SlideX user.
+- `POST /api/agent/model-auth/openai/device-code/poll` accepts the
+  browser-held challenge and returns `pending`, `expired`, or a short-lived
+  runtime credential. The server stores neither value.
 - `GET /api/agent/runs/:runId/events` streams or replays canonical Heddle
   events. Resume with `?after=<sequence>` or `Last-Event-ID`.
 - `POST /api/agent/runs/:runId/cancel` requests cancellation.
@@ -158,7 +164,11 @@ Run-start body:
   "motionDoc": "<current MotionDoc source>",
   "sourceRevision": "stable-editor-source-revision",
   "presentationSourceRevision": 7,
-  "llmApiKey": "<user-provided key>",
+  "modelCredential": {
+    "type": "api-key",
+    "provider": "openai",
+    "apiKey": "<user-provided key>"
+  },
   "model": "optional-model-name"
 }
 ```
@@ -174,9 +184,9 @@ Failures use a stable JSON envelope:
 }
 ```
 
-Request-level codes are `auth_required`, `invalid_request`,
-`session_not_found`, `run_not_found`, `active_run_conflict`,
-`replay_unavailable`, and `internal_error`. Model credential, quota,
+Request-level codes are `auth_required`, `invalid_request`, `rate_limited`,
+`model_auth_unavailable`, `session_not_found`, `run_not_found`,
+`active_run_conflict`, `replay_unavailable`, and `internal_error`. Model credential, quota,
 validation, Presentation conflict/finalization, completion-record, and run
 failures are sanitized terminal events rather than raw provider errors. An
 exact terminal whose append response was lost is recovered by run identity;
@@ -196,15 +206,16 @@ not an end-to-end readiness check.
 Every HTTP response has `X-Request-ID`. Accepted and terminal run logs use
 `runId` as the support correlation key. Logs may include IDs, model, outcome,
 duration, and tool-call count, but not prompts, MotionDoc source, user identity,
-headers, cookies, provider bodies, or `llmApiKey`.
+headers, cookies, provider bodies, legacy `llmApiKey`, explicit API keys,
+OAuth access tokens, or device-code challenge secrets.
 
 ## Security invariants
 
-- Use HTTPS for every deployed editor-to-server request; the model key exists
-  in the start-request body while that request is processed.
-- Never add the model key to environment variables, browser persistence,
+- Use HTTPS for every deployed editor-to-server request; the selected model
+  credential exists in the start-request body while that request is processed.
+- Never add the model credential or device challenge to environment variables, browser persistence,
   product sessions, Heddle state, events, artifacts, logs, or error text.
-- Keep product identity and model credentials separate. A model key is not a
+- Keep product identity and model credentials separate. A model credential is not a
   login or tenant identifier.
 - Production ignores `DEV_AUTH_BYPASS` and `DEV_HEDDLE_AUTH_STORE`. Do not
   depend on either shortcut outside local diagnostics.
@@ -277,8 +288,8 @@ npm run dev -- --port 3181
 The `3180`/`3181` pair is only a collision-free convention. Any ports work when
 the editor URL, server URL, Supabase site URL, and CORS allowlist agree.
 
-Open `/workspace/pitch/`, enter a funded OpenAI API key in Agent settings, and
-exercise the manual acceptance flow below. The server also provides
+Open `/workspace/pitch/`, enter a funded OpenAI API key or connect a Codex
+subscription in Agent settings, and exercise the manual acceptance flow below. The server also provides
 `npm run try:anonymous-byok` and `npm run try:anonymous-byok -- --quality` for
 repeatable API-level evidence; those commands complement, but do not replace,
 real product interaction.
@@ -431,7 +442,7 @@ validation result, and pass/fail for each turn.
 | Agent button is missing | Confirm both feature flags; rebuild the editor after changing `NEXT_PUBLIC_*`. |
 | `Failed to fetch` | Confirm the server is listening on the URL embedded in the editor, the browser origin is in `CORS_ORIGIN`, and HTTPS pages are not calling an HTTP API. |
 | Stuck on **Working** or **Thinking** | Inspect the run by `runId`, server terminal logs, SSE proxy buffering/timeouts, provider credential/quota state, and MCP subprocess output. |
-| Key is empty after refresh | Expected: BYOK is current-tab memory only. Re-enter it. |
+| Model credential is empty after refresh | Expected: credentials are current-tab memory only. Re-enter the API key or reconnect Codex. |
 | Conversation or deck disappears after deploy | Confirm both Supabase selectors are enabled, the service-role credential can access `agent_sessions`, `agent_session_messages`, `agent_session_records`, both archive tables, and both append RPCs, and the canonical `presentations.source` was saved. In file mode, confirm a persistent `DATA_DIR` volume is mounted. |
 | `replay_unavailable` | The in-process replay window expired or the process restarted. Hydrate durable session history; do not invent missing progress. |
 | MCP preparation fails | Verify the configured command, arguments, working directory, installed artifact, Node version, and filesystem permissions inside the service environment. |
@@ -486,7 +497,7 @@ Acceptance for the slice:
 3. Select A and restore its chat without rolling the current Presentation back.
 4. Continue A and prove Heddle reused its conversation with the current
    Presentation source as the next turn base.
-5. Select B, refresh, and prove B remains selected while BYOK is forgotten.
+5. Select B, refresh, and prove B remains selected while the model credential is forgotten.
 6. Prove duplicate titles do not collide and another user cannot list or open
    either session.
 7. Prove switching never races an active run and cross-Presentation selection

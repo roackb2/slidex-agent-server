@@ -90,16 +90,27 @@ previously committed input and completed turns survive.
 Accepted user messages and success, cancellation, or failure terminals are
 persisted as one explainable product history. Reset marks an in-flight address
 before deleting its session so a late result cannot recreate deleted state.
-The run-start request is the only SlideX boundary that accepts a user model
-credential. The service passes it directly into the request-scoped engine and
-retains only non-secret lifecycle fields. The key must never enter product
-sessions, run results/events, Heddle traces or artifacts, logs, or error
-messages. Heddle's safe `result.failure` category is the source of truth for
-model failures; do not parse provider strings or add another HTTP-status
-classifier here. Heddle `authentication` becomes `model_credential_rejected`;
-Heddle `quota` becomes `model_quota_exhausted`. The latter remains a general
-actionable run error so the editor does not refocus the key field as though a
-valid but exhausted key were malformed.
+The run-start request is the only SlideX boundary that accepts the selected
+model credential: either an OpenAI API key or a short-lived Codex access token.
+The service passes that discriminated union directly into the request-scoped
+engine and retains only non-secret lifecycle fields. The transitional
+`llmApiKey` input is normalized at the HTTP schema boundary; new callers use
+`modelCredential`. Neither credential variant may enter product sessions, run
+results/events, Heddle traces or artifacts, logs, or error messages.
+
+`server/routes/modelAuth.ts` exposes the authenticated, no-store device-code
+challenge and poll transport used to acquire a Codex runtime credential. The
+browser owns the challenge and returned credential in memory. The server does
+not create an OAuth session, retain a challenge, refresh a token, or persist a
+credential. Heddle owns the OpenAI device-flow protocol and runtime credential
+shape; SlideX owns product authentication, endpoint policy, and abuse limits.
+
+Heddle's safe `result.failure` category is the source of truth for model
+failures; do not parse provider strings or add another HTTP-status classifier
+here. Heddle `authentication` becomes `model_credential_rejected`; Heddle
+`quota` becomes `model_quota_exhausted`. The latter remains a general
+actionable run error so the editor does not present a valid but exhausted
+credential as malformed.
 
 Successful result projection is also a product boundary. A changed MotionDoc is
 accepted only when the turn includes a successful `slidex_validate_motion_doc`

@@ -16,13 +16,27 @@ test("redacts credentials even when a future caller logs request-shaped fields",
         authorization: "Bearer request-secret",
         cookie: "session=request-secret"
       },
-      body: { llmApiKey: "model-secret" }
+      body: {
+        llmApiKey: "legacy-model-secret",
+        modelCredential: {
+          apiKey: "model-secret",
+          accessToken: "oauth-secret"
+        },
+        challenge: {
+          deviceAuthId: "device-secret",
+          userCode: "user-code-secret"
+        }
+      }
     },
-    llmApiKey: "top-level-secret"
+    llmApiKey: "top-level-secret",
+    credential: { accessToken: "nested-oauth-secret" }
   }, "Redaction check");
 
   const serialized = output.lines.join("");
-  assert.doesNotMatch(serialized, /request-secret|model-secret|top-level-secret/);
+  assert.doesNotMatch(
+    serialized,
+    /request-secret|legacy-model-secret|model-secret|oauth-secret|device-secret|user-code-secret|top-level-secret|nested-oauth-secret/
+  );
   assert.match(serialized, /\[Redacted\]/);
 });
 

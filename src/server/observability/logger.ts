@@ -23,11 +23,25 @@ export function createServerLogger(
         "req.headers.authorization",
         "req.headers.cookie",
         "req.body.llmApiKey",
+        "req.body.modelCredential.apiKey",
+        "req.body.modelCredential.accessToken",
+        "req.body.challenge.deviceAuthId",
+        "req.body.challenge.userCode",
         "request.headers.authorization",
         "request.headers.cookie",
         "request.body.llmApiKey",
+        "request.body.modelCredential.apiKey",
+        "request.body.modelCredential.accessToken",
+        "request.body.challenge.deviceAuthId",
+        "request.body.challenge.userCode",
         "llmApiKey",
-        "*.llmApiKey"
+        "*.llmApiKey",
+        "modelCredential.apiKey",
+        "modelCredential.accessToken",
+        "*.modelCredential.apiKey",
+        "*.modelCredential.accessToken",
+        "credential.accessToken",
+        "*.credential.accessToken"
       ],
       censor: REDACTED
     }

@@ -19,7 +19,7 @@ import {
   StartAgentRunResultSchema,
   type AgentRunEvent,
   type Session,
-  type StartAgentRunInput
+  type StartAgentRunRequest
 } from "../../shared/schema.js";
 import {
   createAttachAgentSessionHandler,
@@ -40,11 +40,15 @@ test("keeps the reconnectable run API hidden while preserving the legacy stream 
     const runResponse = await postJson(`${baseUrl}/api/agent/runs`);
     const sessionsResponse = await fetch(`${baseUrl}/api/agent/sessions`);
     const sessionResponse = await fetch(`${baseUrl}/api/agent/sessions/session-1`);
+    const deviceCodeResponse = await postJson(
+      `${baseUrl}/api/agent/model-auth/openai/device-code`
+    );
     const legacyResponse = await postJson(`${baseUrl}/api/agent/stream`);
 
     assert.equal(runResponse.status, 404);
     assert.equal(sessionsResponse.status, 404);
     assert.equal(sessionResponse.status, 404);
+    assert.equal(deviceCodeResponse.status, 404);
     assert.equal(legacyResponse.status, 401);
   });
 });
@@ -118,7 +122,9 @@ test("requires authentication on every reconnectable endpoint when enabled", asy
       }),
       fetch(`${baseUrl}/api/agent/sessions/session-1`, { method: "DELETE" }),
       fetch(`${baseUrl}/api/agent/runs/run-1/events?after=0`),
-      fetch(`${baseUrl}/api/agent/runs/run-1/cancel`, { method: "POST" })
+      fetch(`${baseUrl}/api/agent/runs/run-1/cancel`, { method: "POST" }),
+      postJson(`${baseUrl}/api/agent/model-auth/openai/device-code`),
+      postJson(`${baseUrl}/api/agent/model-auth/openai/device-code/poll`)
     ]);
 
     for (const response of responses) {
@@ -663,15 +669,15 @@ function requestAgentRun(
       presentationTitle: "Test deck",
       presentationSourceRevision: 7,
       ...input
-    } satisfies StartAgentRunInput)
+    } satisfies StartAgentRunRequest)
   });
 }
 
 type AgentRunTestInput = Omit<
-  StartAgentRunInput,
+  StartAgentRunRequest,
   "presentationId" | "presentationTitle" | "presentationSourceRevision"
 > & Partial<Pick<
-  StartAgentRunInput,
+  StartAgentRunRequest,
   "presentationId" | "presentationTitle" | "presentationSourceRevision"
 >>;
 

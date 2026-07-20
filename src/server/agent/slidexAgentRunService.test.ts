@@ -20,6 +20,7 @@ import {
 } from "../storage/presentationDocumentRepository.js";
 import {
   AgentRunProtocol,
+  type ModelCredential,
   type Session,
   type StartAgentRunInput
 } from "../../shared/schema.js";
@@ -41,7 +42,7 @@ test("streams a reconnectable run and persists the completed SlideX session", as
       message: "Make the title more direct",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key",
+      modelCredential: apiKeyCredential("test-api-key"),
       model: "gpt-test"
     });
 
@@ -118,7 +119,7 @@ test("commits a changed Presentation before publishing terminal success", async 
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key"
+      modelCredential: apiKeyCredential("test-api-key")
     });
     const events = await collect(fixture.service.subscribe({
       userId: fixture.user.id,
@@ -164,7 +165,7 @@ test("recovers an exact terminal whose append response was lost after commit", a
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key"
+      modelCredential: apiKeyCredential("test-api-key")
     });
     const events = await collect(fixture.service.subscribe({
       userId: fixture.user.id,
@@ -215,7 +216,7 @@ test("reports a missing completion record truthfully after the deck was saved", 
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key"
+      modelCredential: apiKeyCredential("test-api-key")
     });
     const events = await collect(fixture.service.subscribe({
       userId: fixture.user.id,
@@ -251,7 +252,7 @@ test("publishes a recoverable conflict without claiming the deck was saved", asy
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key"
+      modelCredential: apiKeyCredential("test-api-key")
     });
     const events = await collect(fixture.service.subscribe({
       userId: fixture.user.id,
@@ -297,7 +298,7 @@ test("does not increment the Presentation revision for an unchanged result", asy
       message: "Read it",
       motionDoc: "# Updated deck",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key"
+      modelCredential: apiKeyCredential("test-api-key")
     });
     const events = await collect(fixture.service.subscribe({
       userId: fixture.user.id,
@@ -329,7 +330,7 @@ test("preserves a complete two-sentence read-only answer beyond the deck-change 
       message: "Inspect the deck without changing it and answer in exactly two sentences",
       motionDoc: "# Updated deck",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key"
+      modelCredential: apiKeyCredential("test-api-key")
     });
     const events = await collect(fixture.service.subscribe({
       userId: fixture.user.id,
@@ -358,7 +359,7 @@ test("bounds an oversized read-only answer after its last complete sentence", as
       message: "Inspect the deck without changing it",
       motionDoc: "# Updated deck",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key"
+      modelCredential: apiKeyCredential("test-api-key")
     });
     const events = await collect(fixture.service.subscribe({
       userId: fixture.user.id,
@@ -395,7 +396,7 @@ test("emits correlation-safe accepted and terminal lifecycle facts", async () =>
       message: "Sensitive user request",
       motionDoc: "# Sensitive source",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key",
+      modelCredential: apiKeyCredential("test-api-key"),
       model: "gpt-test"
     }, { correlationId: "request-1" });
     await collect(fixture.service.subscribe({
@@ -452,7 +453,7 @@ test("runs the deterministic mock through the same reconnectable lifecycle", asy
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
       presentationSourceRevision: 7,
-      llmApiKey: "test-api-key"
+      modelCredential: apiKeyCredential("test-api-key")
     });
     const events = await collect(service.subscribe({
       userId: user.id,
@@ -481,7 +482,7 @@ test("keeps runs private to the authenticated user", async () => {
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key"
+      modelCredential: apiKeyCredential("test-api-key")
     });
 
     assert.throws(
@@ -508,7 +509,7 @@ test("hydrates durable history and delegates active-run discovery to Heddle", as
       message: "Keep working",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key"
+      modelCredential: apiKeyCredential("test-api-key")
     });
 
     const running = await fixture.service.getSessionState(fixture.user.id, accepted.session.id);
@@ -543,7 +544,7 @@ test("persists an explainable cancelled terminal message", async () => {
       message: "Make a long update",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key"
+      modelCredential: apiKeyCredential("test-api-key")
     });
 
     assert.equal(fixture.service.cancel(fixture.user.id, accepted.runId), true);
@@ -570,7 +571,7 @@ test("sanitizes run failures and persists their terminal meaning", async () => {
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key"
+      modelCredential: apiKeyCredential("test-api-key")
     });
     const events = await collect(fixture.service.subscribe({
       userId: fixture.user.id,
@@ -605,7 +606,7 @@ test("turns a rejected BYOK credential into a stable actionable terminal", async
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
-      llmApiKey: "rejected-api-key"
+      modelCredential: apiKeyCredential("rejected-api-key")
     });
     const events = await collect(fixture.service.subscribe({
       userId: fixture.user.id,
@@ -616,14 +617,14 @@ test("turns a rejected BYOK credential into a stable actionable terminal", async
     assert.ok(terminal && terminal.kind === "error");
     assert.deepEqual(terminal.error, {
       code: "model_credential_rejected",
-      message: "OpenAI rejected this API key. Check the key and try again."
+      message: "OpenAI rejected this model credential. Reconnect the Codex account or check the API key, then try again."
     });
     assert.doesNotMatch(JSON.stringify(terminal), /sensitive provider/);
 
     const state = await fixture.service.getSessionState(fixture.user.id, accepted.session.id);
     assert.equal(
       state.session.messages.at(-1)?.content,
-      "OpenAI rejected this API key. Check the key and try again."
+      "OpenAI rejected this model credential. Reconnect the Codex account or check the API key, then try again."
     );
     assert.equal(
       state.session.messages.at(-1)?.metadata?.errorCode,
@@ -646,7 +647,7 @@ test("turns exhausted BYOK quota into a distinct actionable terminal", async () 
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
-      llmApiKey: "quota-exhausted-api-key"
+      modelCredential: apiKeyCredential("quota-exhausted-api-key")
     });
     const events = await collect(fixture.service.subscribe({
       userId: fixture.user.id,
@@ -657,7 +658,7 @@ test("turns exhausted BYOK quota into a distinct actionable terminal", async () 
     assert.ok(terminal && terminal.kind === "error");
     assert.deepEqual(terminal.error, {
       code: "model_quota_exhausted",
-      message: "This OpenAI API key is valid, but it has no available quota. Check the account billing or use a different key, then try again."
+      message: "This OpenAI credential is valid, but it has no available quota. Check the account plan or billing, then try again."
     });
     assert.doesNotMatch(JSON.stringify(terminal), /sensitive provider/);
 
@@ -688,7 +689,7 @@ test("replaces source-like terminal summaries before returning or persisting the
           message: "Update it",
           motionDoc: "# Original deck",
           sourceRevision: "revision-1",
-          llmApiKey: "test-api-key"
+          modelCredential: apiKeyCredential("test-api-key")
         });
         const events = await collect(fixture.service.subscribe({
           userId: fixture.user.id,
@@ -730,7 +731,7 @@ test("bounds source-free assistant copy and retains the authoritative validation
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key"
+      modelCredential: apiKeyCredential("test-api-key")
     });
     const events = await collect(fixture.service.subscribe({
       userId: fixture.user.id,
@@ -759,7 +760,7 @@ test("does not apply changed decks whose final source is invalid or unvalidated"
           message: "Update it",
           motionDoc: "# Original deck",
           sourceRevision: "revision-1",
-          llmApiKey: "test-api-key"
+          modelCredential: apiKeyCredential("test-api-key")
         });
         const events = await collect(fixture.service.subscribe({
           userId: fixture.user.id,
@@ -790,43 +791,72 @@ test("does not apply changed decks whose final source is invalid or unvalidated"
   }
 });
 
-test("never exposes or persists the ephemeral model key", async () => {
-  const sentinel = "sk-sentinel-ephemeral-only-123456";
-  const records: Array<Record<string, unknown>> = [];
-  const logger: AgentRunLogger = {
-    info: (fields) => records.push(fields),
-    warn: (fields) => records.push(fields)
-  };
-  const engine = createEngine();
-  let receivedKey: string | undefined;
-  const createEngineWithSentinel: NonNullable<SlideXAgentRunServiceOptions["createEngine"]> =
-    async (_env, input) => {
-      receivedKey = input.llmApiKey;
-      return engine;
-    };
-  const fixture = await createFixture(engine, logger, createEngineWithSentinel);
+test("never exposes or persists an ephemeral model credential", async (t) => {
+  const cases: Array<{
+    name: string;
+    secret: string;
+    credential: ModelCredential;
+  }> = [
+    {
+      name: "API key",
+      secret: "sk-sentinel-ephemeral-only-123456",
+      credential: apiKeyCredential("sk-sentinel-ephemeral-only-123456")
+    },
+    {
+      name: "Codex access token",
+      secret: "oauth-sentinel-ephemeral-only-123456",
+      credential: {
+        type: "oauth-access-token",
+        provider: "openai",
+        accessToken: "oauth-sentinel-ephemeral-only-123456",
+        expiresAt: Date.now() + 60 * 60_000,
+        accountId: "account-1"
+      }
+    }
+  ];
 
-  try {
-    const accepted = await fixture.start({
-      message: "Keep the credential out of durable state",
-      motionDoc: "# Original deck",
-      sourceRevision: "revision-1",
-      llmApiKey: sentinel
+  for (const current of cases) {
+    await t.test(current.name, async () => {
+      const records: Array<Record<string, unknown>> = [];
+      const logger: AgentRunLogger = {
+        info: (fields) => records.push(fields),
+        warn: (fields) => records.push(fields)
+      };
+      const engine = createEngine();
+      let receivedCredential: ModelCredential | undefined;
+      const createEngineWithSentinel: NonNullable<SlideXAgentRunServiceOptions["createEngine"]> =
+        async (_env, input) => {
+          receivedCredential = input.modelCredential;
+          return engine;
+        };
+      const fixture = await createFixture(engine, logger, createEngineWithSentinel);
+
+      try {
+        const accepted = await fixture.start({
+          message: "Keep the credential out of durable state",
+          motionDoc: "# Original deck",
+          sourceRevision: "revision-1",
+          modelCredential: current.credential
+        });
+        const events = await collect(fixture.service.subscribe({
+          userId: fixture.user.id,
+          runId: accepted.runId
+        }));
+        const state = await fixture.service.getSessionState(
+          fixture.user.id,
+          accepted.session.id
+        );
+        const persistedFiles = await readUtf8Files(fixture.root);
+
+        assert.deepEqual(receivedCredential, current.credential);
+        assert.doesNotMatch(
+          JSON.stringify({ accepted, events, state, records, persistedFiles }),
+          new RegExp(current.secret)
+        );
+      } finally {
+        await fs.rm(fixture.root, { recursive: true, force: true });
+      }
     });
-    const events = await collect(fixture.service.subscribe({
-      userId: fixture.user.id,
-      runId: accepted.runId
-    }));
-    const state = await fixture.service.getSessionState(fixture.user.id, accepted.session.id);
-    const persistedFiles = await readUtf8Files(fixture.root);
-
-    assert.equal(receivedKey, sentinel);
-    assert.doesNotMatch(
-      JSON.stringify({ accepted, events, state, records, persistedFiles }),
-      new RegExp(sentinel)
-    );
-  } finally {
-    await fs.rm(fixture.root, { recursive: true, force: true });
   }
 });
 
@@ -841,7 +871,7 @@ test("keeps result persistence failures distinct without exposing storage detail
       message: "Update it",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key"
+      modelCredential: apiKeyCredential("test-api-key")
     });
     fixture.sessionStore.appendRunMessage = async () => {
       throw new Error("sensitive storage failure detail");
@@ -876,7 +906,7 @@ test("resets product state without allowing an in-flight run to recreate it", as
       message: "Keep working",
       motionDoc: "# Original deck",
       sourceRevision: "revision-1",
-      llmApiKey: "test-api-key"
+      modelCredential: apiKeyCredential("test-api-key")
     });
 
     assert.deepEqual(
@@ -1040,6 +1070,10 @@ type AgentRunTestInput = Omit<
   StartAgentRunInput,
   "presentationId" | "presentationTitle" | "presentationSourceRevision"
 >>;
+
+function apiKeyCredential(apiKey: string): ModelCredential {
+  return { type: "api-key", provider: "openai", apiKey };
+}
 
 async function readUtf8Files(root: string): Promise<Array<{ path: string; content: string }>> {
   const entries = await fs.readdir(root, { withFileTypes: true });
