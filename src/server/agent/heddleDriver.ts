@@ -16,7 +16,8 @@ import type { AgentDriver, AgentRunArgs } from "./types.js";
  *
  * Boundary: this driver owns Heddle wiring. It prepares the self-contained
  * SlideX MCP host extension ONCE (shared across all requests), then builds a
- * fresh, user-scoped conversation engine per request — the user's API key, a
+ * fresh, user-scoped conversation engine per request — the user's selected
+ * request-scoped model credential, a
  * per-user/session state root, and the shared extension — and delegates the turn
  * to the SlideX agent module. The stable state root lets each fresh engine reuse
  * the same durable Heddle conversation. Heddle owns the MCP subprocess lifecycle
@@ -55,7 +56,7 @@ export function createHeddleDriver(env: Env): AgentDriver {
 
 export async function createSlideXConversationEngine(
   env: Env,
-  args: Pick<AgentRunArgs, "user" | "sessionId" | "llmApiKey" | "model">,
+  args: Pick<AgentRunArgs, "user" | "sessionId" | "modelCredential" | "model">,
   repositories: HeddleChatRepositories = {}
 ): Promise<ConversationEngine> {
   const extension = await prepareSlideXExtension(env);
@@ -68,8 +69,8 @@ export async function createSlideXConversationEngine(
   await fs.mkdir(stateRoot, { recursive: true });
 
   // Dev-only: resolve credentials from a Heddle OAuth store (e.g. a Codex
-  // subscription) instead of the per-request API key. Production always uses
-  // the user's own key.
+  // subscription) instead of the per-request credential. Production always
+  // uses the user's selected request-scoped credential.
   const devAuthStore =
     env.NODE_ENV !== "production" && env.DEV_HEDDLE_AUTH_STORE
       ? path.resolve(env.DEV_HEDDLE_AUTH_STORE)
@@ -80,7 +81,9 @@ export async function createSlideXConversationEngine(
     stateRoot,
     ...(devAuthStore
       ? { credentialStorePath: devAuthStore }
-      : { apiKey: args.llmApiKey, preferApiKey: true }),
+      : args.modelCredential.type === "api-key"
+        ? { apiKey: args.modelCredential.apiKey, preferApiKey: true }
+        : { credential: args.modelCredential }),
     model: args.model,
     ...repositories,
     memoryMaintenanceMode: "none",
@@ -93,7 +96,7 @@ export async function createSlideXConversationEngine(
 
   if (devAuthStore) {
     console.warn(
-      `[agent] DEV_HEDDLE_AUTH_STORE is ON — using Heddle OAuth credentials from ${devAuthStore} instead of the request llmApiKey.`
+      `[agent] DEV_HEDDLE_AUTH_STORE is ON — using Heddle OAuth credentials from ${devAuthStore} instead of the request-scoped model credential.`
     );
   }
 

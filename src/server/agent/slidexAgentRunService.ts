@@ -93,7 +93,7 @@ type CreateEngine = (
   input: {
     user: AuthUser;
     sessionId: string;
-    llmApiKey: string;
+    modelCredential: StartAgentRunInput["modelCredential"];
     model: string;
     motionDoc: string;
     message: string;
@@ -112,12 +112,12 @@ const NOOP_LOGGER: AgentRunLogger = {
 
 const MODEL_CREDENTIAL_REJECTED = {
   code: "model_credential_rejected",
-  message: "OpenAI rejected this API key. Check the key and try again."
+  message: "OpenAI rejected this model credential. Reconnect the Codex account or check the API key, then try again."
 } as const;
 
 const MODEL_QUOTA_EXHAUSTED = {
   code: "model_quota_exhausted",
-  message: "This OpenAI API key is valid, but it has no available quota. Check the account billing or use a different key, then try again."
+  message: "This OpenAI credential is valid, but it has no available quota. Check the account plan or billing, then try again."
 } as const;
 
 const DECK_VALIDATION_FAILED = {
@@ -240,7 +240,7 @@ export class SlideXAgentRunService {
     const engine = await this.createEngine(this.options.env, {
       user,
       sessionId: session.id,
-      llmApiKey: input.llmApiKey,
+      modelCredential: input.modelCredential,
       model,
       motionDoc: input.motionDoc,
       message: input.message

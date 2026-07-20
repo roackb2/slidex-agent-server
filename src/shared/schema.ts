@@ -52,25 +52,76 @@ export const RenameSessionInputSchema = SessionIdInputSchema.extend({
   title: z.string().trim().min(1).max(120)
 });
 
-export const AgentStreamInputSchema = z.object({
+const OpenAiApiKeySchema = z.string().trim().min(8).max(20_000);
+
+export const OpenAiRuntimeCredentialSchema = z.object({
+  type: z.literal("oauth-access-token"),
+  provider: z.literal("openai"),
+  accessToken: z.string().trim().min(1).max(20_000),
+  expiresAt: z.number().int().positive(),
+  accountId: z.string().trim().min(1).max(512).optional()
+});
+
+export const ModelCredentialSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("api-key"),
+    provider: z.literal("openai"),
+    apiKey: OpenAiApiKeySchema
+  }),
+  OpenAiRuntimeCredentialSchema
+]);
+
+const AgentStreamInputFields = {
   sessionId: z.string().min(1).optional(),
   title: z.string().trim().min(1).max(120).optional(),
   message: z.string().trim().min(1).max(20_000),
   motionDoc: z.string().max(2_000_000).default(""),
-  llmApiKey: z.string().trim().min(8).max(20_000),
+  modelCredential: ModelCredentialSchema.optional(),
+  llmApiKey: OpenAiApiKeySchema.optional(),
   model: z.string().trim().min(1).max(120).optional()
-});
+} as const;
+
+const AgentStreamInputObjectSchema = z.object(AgentStreamInputFields)
+  .superRefine(requireExactlyOneModelCredential);
+
+export const AgentStreamInputSchema = AgentStreamInputObjectSchema
+  .transform(normalizeModelCredential);
 
 export const AgentPresentationInputSchema = z.object({
   presentationId: z.string().trim().min(1).max(160),
   presentationTitle: z.string().trim().min(1).max(120)
 });
 
-export const StartAgentRunInputSchema = AgentStreamInputSchema.extend({
+export const StartAgentRunInputSchema = z.object({
+  ...AgentStreamInputFields,
   ...AgentPresentationInputSchema.shape,
   sourceRevision: z.string().trim().min(1).max(128),
   presentationSourceRevision: z.number().int().nonnegative()
+}).superRefine(requireExactlyOneModelCredential)
+  .transform(normalizeModelCredential);
+
+export const OpenAiDeviceCodeChallengeSchema = z.object({
+  deviceAuthId: z.string().trim().min(1).max(2_048),
+  userCode: z.string().trim().min(1).max(128),
+  verificationUrl: z.string().url().refine(isOpenAiAuthUrl, {
+    message: "OpenAI device verification must use auth.openai.com over HTTPS"
+  }),
+  intervalMs: z.number().int().positive(),
+  expiresAt: z.number().int().positive()
 });
+
+export const OpenAiDeviceCodePollInputSchema = z.object({
+  challenge: OpenAiDeviceCodeChallengeSchema
+});
+
+export const OpenAiDeviceCodePollResultSchema = z.discriminatedUnion("status", [
+  z.object({ status: z.literal("pending") }),
+  z.object({ status: z.literal("expired") }),
+  z.object({
+    status: z.literal("authorized"),
+    credential: OpenAiRuntimeCredentialSchema
+  })
+]);
 
 export const StartAgentRunResultSchema = z.object({
   accepted: z.literal(true),
@@ -124,6 +175,8 @@ export const ResetAgentSessionResultSchema = z.object({
 export const AgentApiErrorCodeSchema = z.enum([
   "auth_required",
   "invalid_request",
+  "rate_limited",
+  "model_auth_unavailable",
   "session_not_found",
   "run_not_found",
   "active_run_conflict",
@@ -207,6 +260,7 @@ export type SessionSummary = z.infer<typeof SessionSummarySchema>;
 export type AgentStreamInput = z.infer<typeof AgentStreamInputSchema>;
 export type AgentStreamEvent = z.infer<typeof AgentStreamEventSchema>;
 export type StartAgentRunInput = z.infer<typeof StartAgentRunInputSchema>;
+export type StartAgentRunRequest = z.input<typeof StartAgentRunInputSchema>;
 export type StartAgentRunResult = z.infer<typeof StartAgentRunResultSchema>;
 export type AgentSessionState = z.infer<typeof AgentSessionStateSchema>;
 export type AgentSessionSummary = z.infer<typeof AgentSessionSummarySchema>;
@@ -218,3 +272,48 @@ export type AgentRunEvent = ConversationRunProtocolEvent<
   z.infer<typeof PublicConversationActivitySchema>,
   z.infer<typeof SlideXRunResultSchema>
 >;
+export type ModelCredential = z.infer<typeof ModelCredentialSchema>;
+export type OpenAiDeviceCodeChallenge = z.infer<typeof OpenAiDeviceCodeChallengeSchema>;
+export type OpenAiDeviceCodePollResult = z.infer<typeof OpenAiDeviceCodePollResultSchema>;
+
+function requireExactlyOneModelCredential(
+  input: {
+    llmApiKey?: string;
+    modelCredential?: z.infer<typeof ModelCredentialSchema>;
+  },
+  context: z.RefinementCtx
+): void {
+  if (Boolean(input.llmApiKey) === Boolean(input.modelCredential)) {
+    context.addIssue({
+      code: "custom",
+      message: "Provide exactly one model credential",
+      path: ["modelCredential"]
+    });
+  }
+}
+
+function normalizeModelCredential<
+  T extends {
+    llmApiKey?: string;
+    modelCredential?: z.infer<typeof ModelCredentialSchema>;
+  }
+>(input: T) {
+  const { llmApiKey, modelCredential, ...rest } = input;
+  return {
+    ...rest,
+    modelCredential: modelCredential ?? {
+      type: "api-key" as const,
+      provider: "openai" as const,
+      apiKey: llmApiKey!
+    }
+  };
+}
+
+function isOpenAiAuthUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "auth.openai.com";
+  } catch {
+    return false;
+  }
+}

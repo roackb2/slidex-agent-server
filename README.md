@@ -124,16 +124,20 @@ npm run dev:server
 npm run dev -- --port 3181
 ```
 
-Open `http://127.0.0.1:3181/workspace/pitch/`, open Agent settings, and paste a
-valid OpenAI API key. The expected product behavior is:
+Open `http://127.0.0.1:3181/workspace/pitch/` and open Agent settings. Select
+either a valid OpenAI API key or **Codex subscription**. The latter starts an
+OpenAI device-code challenge; complete it only on the displayed OpenAI URL.
+The expected product behavior is:
 
 1. The first prompt creates or edits a deck and streams activity into the chat.
 2. A follow-up edits the same deck with the same conversation context.
-3. Refreshing the page restores chat and deck state, but the API key is gone.
-4. Supplying the key again lets a read-only question answer without changing
-   the deck.
-5. An invalid key produces a stable credential-rejected message without a raw
-   provider error; **Forget key** removes the tab-local key.
+3. Refreshing the page restores chat and deck state, but the model credential
+   is gone.
+4. Supplying a key or reconnecting Codex lets a read-only question answer
+   without changing the deck.
+5. An invalid or expired credential produces a stable credential-rejected
+   message without a raw provider error; disconnecting removes the tab-local
+   credential.
 6. **New conversation** clears chat continuity without deleting the current
    editor deck or the previous conversation.
 7. The conversation catalog lists durable work, selects earlier sessions, and
@@ -179,7 +183,7 @@ auth bypass. The same test, typecheck, and build run in
 `.github/workflows/agent-regression.yml`. Keep product lifecycle assertions in
 this composed test and use handler stubs only for isolated transport errors.
 
-The reconnectable run API is also default-off so deploying this branch preserves the upstream server behavior. Set `SLIDEX_AGENT_ENABLED=true` to register `/api/agent/runs`, the bounded `/api/agent/sessions` catalog, session detail/association/deletion, `/api/agent/runs/:runId/events`, and `/api/agent/runs/:runId/cancel`. The SlideX editor must be built with `NEXT_PUBLIC_SLIDEX_AGENT_ENABLED=true` at the same time. Leave both flags unset or `false` to keep the conversational agent hidden; the existing `/api/agent/stream` route is unaffected.
+The reconnectable run API is also default-off so deploying this branch preserves the upstream server behavior. Set `SLIDEX_AGENT_ENABLED=true` to register `/api/agent/runs`, the OpenAI device-code start/poll endpoints, the bounded `/api/agent/sessions` catalog, session detail/association/deletion, `/api/agent/runs/:runId/events`, and `/api/agent/runs/:runId/cancel`. The SlideX editor must be built with `NEXT_PUBLIC_SLIDEX_AGENT_ENABLED=true` at the same time. Leave both flags unset or `false` to keep the conversational agent hidden; the existing `/api/agent/stream` route is unaffected.
 
 When that server flag is enabled in production, `CORS_ORIGIN` must be an
 explicit comma-separated allowlist such as `https://editor.example.com`; `*`
@@ -259,15 +263,18 @@ The extension uses Heddle mirror result-artifact rules for MotionDoc-writing too
 
 Heddle owns the MCP subprocess lifecycle via the extension (spawned per tool call), so `MOTIONDOC_MCP_*` is just the command Heddle runs — the built-in `StdioMcpProcessManager` is not used on the Heddle path.
 
-The server never stores the user's LLM API key. It is accepted only in the
-run-start request body, passed into
-`createConversationEngine({ apiKey, preferApiKey: true, model })` for that live
-run, and omitted from product sessions, run events/results, Heddle
-traces/artifacts, and logs. A rejected key becomes the stable
+The server never stores the user's model credential. A run accepts exactly one
+explicit `modelCredential`: an OpenAI API key or a short-lived Codex access
+token. It is passed into the request-scoped Heddle engine and omitted from
+product sessions, run events/results, Heddle traces/artifacts, and logs. The
+authenticated device-code endpoints proxy Heddle's challenge and poll
+operations with `no-store` responses; the browser sends the challenge back on
+each poll, and the server retains neither the challenge nor the resulting
+credential. The legacy `llmApiKey` field remains a normalized compatibility
+input but is not used by new clients. A rejected credential becomes the stable
 `model_credential_rejected` run terminal without exposing the provider's raw
-error. A valid key without usable quota becomes the distinct
-`model_quota_exhausted` terminal with billing-or-key recovery guidance; it is
-not presented as a malformed credential.
+error. A valid credential without usable quota becomes the distinct
+`model_quota_exhausted` terminal and is not presented as malformed.
 
 Successful chat terminals use a SlideX-owned result projection. Changed decks
 must include a passing validation result for the exact final MotionDoc, and the
@@ -292,9 +299,10 @@ HTTP requests emit structured Pino completion logs and return a generated
 `X-Request-ID`. Accepted and terminal agent lifecycle records use `runId` as
 the durable support correlation key and include only session ID, model,
 outcome, duration, and tool-call count. Request serializers omit headers and
-bodies, and defense-in-depth redaction covers bearer credentials, cookies, and
-`llmApiKey`. Prompts, MotionDoc source, user identity, and raw provider errors
-must not be logged. Set `LOG_LEVEL` to `fatal`, `error`, `warn`, `info`,
+bodies, and defense-in-depth redaction covers bearer credentials, cookies,
+legacy `llmApiKey`, explicit API keys, OAuth access tokens, and device-code
+challenge secrets. Prompts, MotionDoc source, user identity, and raw provider
+errors must not be logged. Set `LOG_LEVEL` to `fatal`, `error`, `warn`, `info`,
 `debug`, `trace`, or `silent`; production defaults to `info`.
 
 ## Process lifecycle
@@ -364,7 +372,11 @@ Body:
   "sessionId": "optional-session-id",
   "message": "Create a deck from this outline",
   "motionDoc": "# Current deck",
-  "llmApiKey": "user-owned-key",
+  "modelCredential": {
+    "type": "api-key",
+    "provider": "openai",
+    "apiKey": "user-owned-key"
+  },
   "model": "gpt-4.1"
 }
 ```
@@ -374,6 +386,11 @@ Events are emitted as normal SSE frames with `event:` and JSON `data:` fields: `
 When `SLIDEX_AGENT_ENABLED=true`, the reconnectable run API used by the SlideX editor is:
 
 - `POST /api/agent/runs` to accept a run and return its `runId`.
+- `POST /api/agent/model-auth/openai/device-code` to request a no-store Codex
+  device-code challenge.
+- `POST /api/agent/model-auth/openai/device-code/poll` to poll with that
+  browser-held challenge and return a short-lived runtime credential when
+  authorized.
 - `GET /api/agent/sessions?limit=<1..50>&cursor=<opaque>` to list a bounded,
   newest-first catalog without returning chat or MotionDoc source.
 - `GET /api/agent/sessions/:sessionId` to restore durable product history and

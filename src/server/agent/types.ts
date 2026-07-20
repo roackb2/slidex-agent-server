@@ -1,4 +1,5 @@
 import type { AuthUser } from "../auth.js";
+import type { ModelCredential } from "../../shared/schema.js";
 
 export type AgentEmit = (event: AgentProgressEvent) => void | Promise<void>;
 
@@ -18,7 +19,7 @@ export type AgentRunArgs = {
   sessionId: string;
   motionDoc: string;
   message: string;
-  llmApiKey: string;
+  modelCredential: ModelCredential;
   model: string;
   signal: AbortSignal;
   emit: AgentEmit;
