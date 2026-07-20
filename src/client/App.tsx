@@ -134,7 +134,11 @@ export function App() {
           sessionId: session.id,
           message: userMessage,
           motionDoc,
-          llmApiKey,
+          modelCredential: {
+            type: "api-key",
+            provider: "openai",
+            apiKey: llmApiKey
+          },
           model
         },
         accessToken,

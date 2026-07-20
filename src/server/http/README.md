@@ -17,3 +17,10 @@ The current CORS policy:
 Add future inbound timeout or rate-limit policy here only after the host has
 chosen its operational values. Heddle core must remain transport/deployment
 agnostic.
+
+The OpenAI device-code endpoints use narrow route-owned abuse limits in
+`server/routes/modelAuth.ts`: ten challenge starts per ten minutes and thirty
+polls per minute for one client address. The default in-memory limiter is
+suitable for a single service process. A multi-replica deployment must enforce
+the same or stricter shared limit at the edge or replace the limiter store;
+replica-local counters are not a cross-replica security boundary.

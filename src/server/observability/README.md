@@ -4,7 +4,8 @@ This service owns production-safe structured logs for the SlideX agent server:
 
 - one generated `X-Request-ID` for every HTTP request;
 - compact request/response serializers that omit headers, cookies, and bodies;
-- defense-in-depth Pino redaction for authorization and `llmApiKey` fields;
+- defense-in-depth Pino redaction for authorization, API-key, request-scoped
+  access-token, and device-challenge fields;
 - severity derived from the final HTTP status;
 - stable agent lifecycle events correlated by public `runId` and product
   `sessionId` without logging prompts, MotionDoc source, credentials, or user

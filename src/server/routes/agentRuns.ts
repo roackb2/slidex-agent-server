@@ -202,6 +202,8 @@ function validationIssueCount(error: unknown): number | undefined {
 const ERROR_STATUS = {
   auth_required: 401,
   invalid_request: 400,
+  rate_limited: 429,
+  model_auth_unavailable: 502,
   session_not_found: 404,
   run_not_found: 404,
   active_run_conflict: 409,
