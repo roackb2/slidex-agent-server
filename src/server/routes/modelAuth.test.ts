@@ -76,6 +76,13 @@ test("requires exactly one API-key or runtime model credential", () => {
   }));
 });
 
+test("rejects a device challenge that does not use the official OpenAI auth host", () => {
+  assert.throws(() => OpenAiDeviceCodeChallengeSchema.parse({
+    ...challenge,
+    verificationUrl: "https://sign-in.example.test/codex/device"
+  }));
+});
+
 test("returns an authenticated no-store OpenAI device-code challenge", async () => {
   let requestCount = 0;
   const deviceCodeAuth = createDeviceCodeAuth({
