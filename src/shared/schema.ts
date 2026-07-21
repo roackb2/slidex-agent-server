@@ -195,14 +195,51 @@ export const PublicConversationActivitySchema = z
   .object({
     type: z.string(),
     text: z.string().optional(),
+    done: z.boolean().optional(),
     tool: z.string().optional(),
     result: z.object({
       ok: z.boolean().optional()
     }).optional()
   })
-  .transform((activity) => activity.type === "assistant.stream"
-    ? { type: activity.type }
-    : activity);
+  .superRefine((activity, context) => {
+    if (activity.type !== "reasoning.summary") {
+      return;
+    }
+
+    if (activity.text === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["text"],
+        message: "Reasoning summary activity requires text"
+      });
+    }
+    if (activity.done === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["done"],
+        message: "Reasoning summary activity requires done"
+      });
+    }
+  })
+  .transform((activity) => {
+    if (activity.type === "assistant.stream") {
+      return { type: activity.type };
+    }
+
+    if (
+      activity.type === "reasoning.summary"
+      && activity.text !== undefined
+      && activity.done !== undefined
+    ) {
+      return {
+        type: activity.type,
+        text: activity.text,
+        done: activity.done
+      };
+    }
+
+    return activity;
+  });
 
 export const SlideXRunResultSchema = z.object({
   session: SessionSchema,

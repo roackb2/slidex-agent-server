@@ -1029,6 +1029,41 @@ test("withholds untrusted assistant stream text until terminal projection", () =
   assert.deepEqual(event.activity, { type: "assistant.stream" });
 });
 
+test("preserves provider reasoning summaries as safe product progress", () => {
+  const event = AgentRunProtocol.parseEvent({
+    kind: "activity",
+    runId: "run-1",
+    sequence: 2,
+    timestamp: "2026-07-11T00:00:01.000Z",
+    activity: {
+      type: "reasoning.summary",
+      text: "Inspecting the current slide before choosing an edit.",
+      done: false,
+      internal: "removed"
+    }
+  });
+
+  assert.ok(event.kind === "activity");
+  assert.deepEqual(event.activity, {
+    type: "reasoning.summary",
+    text: "Inspecting the current slide before choosing an edit.",
+    done: false
+  });
+});
+
+test("rejects incomplete reasoning-summary activity", () => {
+  assert.throws(() => AgentRunProtocol.parseEvent({
+    kind: "activity",
+    runId: "run-1",
+    sequence: 2,
+    timestamp: "2026-07-11T00:00:01.000Z",
+    activity: {
+      type: "reasoning.summary",
+      text: "Inspecting the current slide."
+    }
+  }));
+});
+
 async function createFixture(
   engine = createEngine(),
   logger?: AgentRunLogger,
