@@ -1051,6 +1051,30 @@ test("preserves provider reasoning summaries as safe product progress", () => {
   });
 });
 
+test("preserves assistant commentary as safe product progress", () => {
+  const event = AgentRunProtocol.parseEvent({
+    kind: "activity",
+    runId: "run-1",
+    sequence: 3,
+    timestamp: "2026-07-11T00:00:02.000Z",
+    activity: {
+      type: "assistant.commentary",
+      messageId: "commentary-1",
+      text: "I checked the current deck. Next I’m comparing the available layouts.",
+      done: false,
+      internal: "removed"
+    }
+  });
+
+  assert.ok(event.kind === "activity");
+  assert.deepEqual(event.activity, {
+    type: "assistant.commentary",
+    messageId: "commentary-1",
+    text: "I checked the current deck. Next I’m comparing the available layouts.",
+    done: false
+  });
+});
+
 test("rejects incomplete reasoning-summary activity", () => {
   assert.throws(() => AgentRunProtocol.parseEvent({
     kind: "activity",
@@ -1060,6 +1084,20 @@ test("rejects incomplete reasoning-summary activity", () => {
     activity: {
       type: "reasoning.summary",
       text: "Inspecting the current slide."
+    }
+  }));
+});
+
+test("rejects incomplete assistant-commentary activity", () => {
+  assert.throws(() => AgentRunProtocol.parseEvent({
+    kind: "activity",
+    runId: "run-1",
+    sequence: 3,
+    timestamp: "2026-07-11T00:00:02.000Z",
+    activity: {
+      type: "assistant.commentary",
+      text: "Inspecting the current slide.",
+      done: false
     }
   }));
 });
