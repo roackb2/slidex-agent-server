@@ -122,7 +122,14 @@ retain the authoritative validation outcome. Read-only answers preserve up to
 oversized copy stops after the last complete sentence that fits rather than
 showing a sentence fragment.
 Raw `assistant.stream` text is withheld from product activity events until this
-terminal projection has run; status and tool activity remain visible.
+terminal projection has run. Provider-generated `reasoning.summary` text is a
+separate user-visible progress channel and is retained with its `done` flag.
+Assistant-authored `assistant.commentary` is another progress channel: the
+public protocol retains its stable `messageId`, cumulative `text`, and `done`
+flag so clients can stream concrete work updates without confusing them with
+provider reasoning or the terminal response. Structured status and tool
+activity remain visible as well. Never treat reasoning or commentary as
+authoritative deck source or a terminal assistant result.
 In Supabase product mode, the run service then commits a changed source through
 `PresentationDocumentRepository` before appending or publishing terminal
 success. `presentationSourceRevision` is the database CAS revision;

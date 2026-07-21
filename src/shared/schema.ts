@@ -194,15 +194,80 @@ export const AgentApiErrorResponseSchema = z.object({
 export const PublicConversationActivitySchema = z
   .object({
     type: z.string(),
+    messageId: z.string().optional(),
     text: z.string().optional(),
+    done: z.boolean().optional(),
     tool: z.string().optional(),
     result: z.object({
       ok: z.boolean().optional()
     }).optional()
   })
-  .transform((activity) => activity.type === "assistant.stream"
-    ? { type: activity.type }
-    : activity);
+  .superRefine((activity, context) => {
+    if (
+      activity.type !== "reasoning.summary"
+      && activity.type !== "assistant.commentary"
+    ) {
+      return;
+    }
+
+    if (
+      activity.type === "assistant.commentary"
+      && activity.messageId === undefined
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["messageId"],
+        message: "Assistant commentary activity requires messageId"
+      });
+    }
+    if (activity.text === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["text"],
+        message: "Progress activity requires text"
+      });
+    }
+    if (activity.done === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["done"],
+        message: "Progress activity requires done"
+      });
+    }
+  })
+  .transform((activity) => {
+    if (activity.type === "assistant.stream") {
+      return { type: activity.type };
+    }
+
+    if (
+      activity.type === "reasoning.summary"
+      && activity.text !== undefined
+      && activity.done !== undefined
+    ) {
+      return {
+        type: activity.type,
+        text: activity.text,
+        done: activity.done
+      };
+    }
+
+    if (
+      activity.type === "assistant.commentary"
+      && activity.messageId !== undefined
+      && activity.text !== undefined
+      && activity.done !== undefined
+    ) {
+      return {
+        type: activity.type,
+        messageId: activity.messageId,
+        text: activity.text,
+        done: activity.done
+      };
+    }
+
+    return activity;
+  });
 
 export const SlideXRunResultSchema = z.object({
   session: SessionSchema,
